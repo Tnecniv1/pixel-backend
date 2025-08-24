@@ -1,0 +1,148 @@
+// src/screens/HomeScreen.tsx
+import * as React from "react";
+import { SafeAreaView, View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { RootStackParamList } from "../../App";
+import BigPixel from "../components/BigPixel";
+import { getPixelState } from "../api";
+import SignOutButton from "../components/SignOutButton";
+import { useLayoutEffect } from "react"; // NEW
+
+type Props = NativeStackScreenProps<RootStackParamList, "Home">;
+
+const COLORS = {
+  bg: "#F8F4F1",
+  text: "#1F3554",
+  subtext: "#6B7280",
+  orange: "#FFB25E",
+  orangeText: "#171717",
+  blue: "#CBE0FF",
+  blueText: "#11283F",
+  card: "#FFFFFF",
+  shadow: "rgba(0,0,0,0.08)",
+};
+
+export default function HomeScreen({ navigation }: Props) {
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerLeft: () => <SignOutButton />, 
+    });
+  }, [navigation]);
+
+  const [pixel, setPixel] = React.useState<{ lit: number; capacity: number; ratio: number } | null>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  const loadPixel = React.useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await getPixelState();
+      setPixel({ lit: data.lit, capacity: data.capacity, ratio: data.ratio });
+    } catch (e) {
+      console.error("getPixelState failed:", e);
+      setPixel(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadPixel();
+  }, [loadPixel]);
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.title}>SUCCES OU ECHEC ?</Text>
+          <Text style={styles.subtitle}>Il s'agit de ne jamais abandonner</Text>
+        </View>
+
+        {/* REMOVE: on n'affiche plus le bouton dans le layout
+        <View style={{ flex: 1 }}>
+          <SignOutButton />
+        </View>
+        */}
+
+        {/* Grand Pixel */}
+        <View style={styles.pixelBlock}>
+          {loading ? (
+            <View style={styles.pixelPlaceholder}>
+              <Text style={styles.pixelPlaceholderText}>Chargement…</Text>
+            </View>
+          ) : pixel ? (
+            <BigPixel lit={pixel.lit} cols={350} rows={350} size={350} />
+          ) : (
+            <View style={styles.pixelPlaceholder}>
+              <Text style={styles.pixelPlaceholderText}>Impossible de charger le Pixel</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.ctaBlock}>
+          <TouchableOpacity
+            activeOpacity={0.9}
+            style={[styles.cta, styles.ctaOrange]}
+            onPress={() => navigation.navigate("Entrainement")}
+          >
+            <Text style={styles.ctaOrangeText}>ENTRAÎNEMENT</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.9}
+            style={[styles.cta, styles.ctaBlue]}
+            onPress={() => navigation.navigate("Progression", { parcoursId: 1 })}
+          >
+            <Text style={styles.ctaBlueText}>PROGRESSION</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.9}
+            style={[styles.cta, styles.ctaBlue]}
+            onPress={() => navigation.navigate("Leaderboard")}
+          >
+            <Text style={styles.ctaBlueText}>CLASSEMENT</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: COLORS.bg },
+  container: { flex: 1, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 24 },
+  header: { marginBottom: 24, alignItems: "center" },
+  title: { color: COLORS.text, fontWeight: "800", fontSize: 20 },
+  subtitle: { color: COLORS.subtext, fontSize: 13, marginTop: 6 },
+
+  pixelBlock: { alignItems: "center", marginBottom: 16 },
+  pixelPlaceholder: {
+    width: 350,
+    height: 350,
+    borderWidth: 1,
+    borderColor: "#E5E5E5",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  pixelPlaceholderText: { color: "#6B7280" },
+
+  ctaBlock: { gap: 16, marginTop: 10 },
+  cta: {
+    borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    backgroundColor: COLORS.card,
+    shadowColor: COLORS.shadow,
+    shadowOpacity: 1,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 3,
+    alignItems: "center",
+  },
+  ctaOrange: { backgroundColor: COLORS.orange },
+  ctaBlue: { backgroundColor: COLORS.blue },
+  ctaOrangeText: { color: COLORS.orangeText, fontWeight: "900", fontSize: 16, letterSpacing: 0.2 },
+  ctaBlueText: { color: COLORS.blueText, fontWeight: "900", fontSize: 16, letterSpacing: 0.2 },
+});

@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from .routers import parcours, suivi
 from .routers import sessions  
 from .routers import progression 
@@ -13,6 +13,22 @@ from app.routers import stats
 
 
 app = FastAPI(title="Pixel API", version="0.1.0")
+
+APP_DEBUG_VERSION = "debug-headers-v1"
+
+@app.get("/_version")
+def _version():
+    # Permet de vérifier que le nouveau code est bien en ligne
+    return {"ok": True, "version": APP_DEBUG_VERSION}
+
+@app.get("/_echo")
+def _echo(request: Request):
+    # Renvoie les headers reçus (pour voir s'il y a bien Authorization)
+    return {
+        "ok": True,
+        "headers": dict(request.headers),
+    }
+
 
 @app.middleware("http")
 async def log_auth_header(request: Request, call_next):

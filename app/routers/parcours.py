@@ -2,6 +2,10 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, Dict, Any, Literal, List
 from ..deps import supabase
+from jose import jwt
+import logging
+from datetime import date, timezone
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/parcours", tags=["parcours"])
 
@@ -265,6 +269,17 @@ def get_parcours_position(
 # -------------------------------------------------------------------
 @router.get("/positions_currentes")
 def positions_currentes(
+    # --- AJOUT DE DEBUG ---
+    auth = request.headers.get("Authorization")
+    print("AUTH header present:", bool(auth))
+    if auth and auth.startswith("Bearer "):
+        token = auth.split(" ",1)[1]
+        try:
+            payload = jwt.get_unverified_claims(token)  # lecture sans vérif
+            print("access_token exp:", payload.get("exp"))
+        except Exception as e:
+            print("cannot read claims:", e)
+    # ----------------------
     user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
     parcours_id: Optional[int] = Query(None, description="Parcours seed si user_id absent"),
 ):

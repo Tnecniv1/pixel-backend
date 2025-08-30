@@ -14,6 +14,14 @@ from app.routers import stats
 
 app = FastAPI(title="Pixel API", version="0.1.0")
 
+@app.middleware("http")
+async def log_auth_header(request: Request, call_next):
+    auth = request.headers.get("authorization")
+    short = (auth[:30] + "...") if auth else ""
+    print(f"[AUTH DEBUG] path={request.url.path} auth={'present' if auth else 'missing'} {short}")
+    resp = await call_next(request)
+    return resp
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

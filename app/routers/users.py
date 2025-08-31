@@ -30,21 +30,30 @@ class ResolveIdsIn(BaseModel):
 @router.get("/resolve")
 def resolve_display_names_get(
     ids: str = Query(""),
-    authorization: str = Header(default=None)
-    ):
-
+    authorization: str | None = Header(default=None),
+):
     """
     Ex: /users/resolve?ids=1,2,8
     Retourne: {"users":[{"id":1,"name":"Alice"}, ...]}
     """
+    # 1) parser les IDs
+    raw_ids = [x.strip() for x in ids.split(",") if x.strip()]
+    # optionnel: garder que les entiers
+    try:
+        id_list = [int(x) for x in raw_ids]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="ids must be integers, comma-separated")
 
-    raw_ids = [x for x in ids.split(",") if x.strip()]
-    if not raw_ids:
+    if not id_list:
         return {"users": []}
 
-    sb = user_scoped_client(request.headers.get("authorization"))
-    q = sb.table("Users").select("id, name").in_("id", raw_ids).execute()    
+    # 2) client Supabase lié au JWT
+    sb = user_scoped_client(authorization)
+
+    # 3) requête
+    q = sb.table("Users").select("id, name").in_("id", id_list).execute()
     data = getattr(q, "data", []) or []
+
     out = [{"id": int(r["id"]), "name": r.get("name") or ""} for r in data if "id" in r]
     return {"users": out}
 

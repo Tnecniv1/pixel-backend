@@ -1,6 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr
-from ..deps import supabase  # ton client Supabase (service role)
+from ..deps import supabase, user_scoped_client
 from ..services.user_resolver import resolve_or_register_user_id
 from typing import List, Union
 from pydantic import BaseModel
@@ -28,19 +28,21 @@ class ResolveIdsIn(BaseModel):
     ids: List[Union[int, str]]
 
 @router.get("/resolve")
-def resolve_display_names_get(ids: str = Query("")):
-    """
-    Ex: /users/resolve?ids=1,2,8
-    Retourne: {"users":[{"id":1,"name":"Alice"}, ...]}
-    """
+def resolve_display_names_get(
+    ids: str = Query(""),
+    authorization: str = Header(default=None)
+    ):
+
     raw_ids = [x for x in ids.split(",") if x.strip()]
     if not raw_ids:
         return {"users": []}
 
-    q = supabase.table("Users").select("id, name").in_("id", raw_ids).execute()
-    data = getattr(q, "data", []) or []
+    sb = user_scoped_client(request.headers.get("authorization"))
+    q = sb.table("Users").select("id, name").in_("id", raw_ids).execute()    data = getattr(q, "data", []) or []
     out = [{"id": int(r["id"]), "name": r.get("name") or ""} for r in data if "id" in r]
     return {"users": out}
+
+
 
 @router.post("/resolve")
 def resolve_display_names_post(body: ResolveIdsIn):

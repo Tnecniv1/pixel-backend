@@ -271,18 +271,21 @@ def get_parcours_position(
 def positions_currentes(
     user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
     parcours_id: Optional[int] = Query(None, description="Parcours seed si user_id absent"),
+    authorization: Optional[str] = Header(default=None),  # 👈 ajouté
 ):
     """
     Renvoie les niveaux actuels par opération (Addition/Soustraction/Multiplication),
     + score_points = somme brute de Observations.Score sur *tous* les entraînements du user,
     + score_global = moyenne des taux (si dispo).
     """
+    sb = user_scoped_client(authorization)  # 👈 client Supabase lié au JWT
+
     # 1) déterminer l'utilisateur
     uid: Optional[int] = user_id
     if uid is None and parcours_id is not None:
         try:
             sp = (
-                supabase.table("Suivi_Parcours")
+                sb.table("Suivi_Parcours")
                 .select("Users_Id")
                 .eq("Parcours_Id", parcours_id)
                 .order("id", desc=True)
@@ -305,11 +308,11 @@ def positions_currentes(
         }
 
     # 2) positions par type
-    by_type = _last_suivi_by_type(uid)
+    by_type = _last_suivi_by_type(uid)  # ⚠️ cette fonction doit continuer d'utiliser sb ou pas selon son implémentation
 
     # 3) score total (lifetime)
     try:
-        score_total = _sum_user_score_via_entrainement(uid)
+        score_total = _sum_user_score_via_entrainement(uid)  # idem remarque ci-dessus
     except Exception as e:
         print("[parcours] positions_currentes - err score total:", e)
         score_total = 0
@@ -329,6 +332,7 @@ def positions_currentes(
         "score_points": score_total,
         "score_global": score_global,
     }
+
 
 # -------------------------------------------------------------------
 # Optionnel: endpoint dédié pour le score total
@@ -444,18 +448,20 @@ def score_timeseries(
     parcours_id: int | None = Query(None, description="Si fourni, on infère l'utilisateur via Suivi_Parcours"),
     step: int = Query(100, ge=1, description="taille d'une fenêtre (obs/point)"),
     windows: int = Query(10, ge=1, le=50, description="nombre de points"),
+    authorization: Optional[str] = Header(default=None),  # 👈 ajouté
 ):
     """
     Evolution du score CUMULÉ (toutes opérations), par tranches de `step` obs,
     sur les `windows` dernières tranches (ex: 10×100 = 1000 obs max).
     """
+    sb = user_scoped_client(authorization)  # 👈 client Supabase lié au JWT
 
     # --- 1) Résoudre l'utilisateur ---
     uid = user_id
     if uid is None and parcours_id is not None:
         try:
             r = (
-                supabase.table("Suivi_Parcours")
+                sb.table("Suivi_Parcours")
                 .select("Users_Id")
                 .eq("Parcours_Id", parcours_id)
                 .order("id", desc=True)
@@ -471,10 +477,10 @@ def score_timeseries(
     if uid is None:
         return {"points": [], "step": step, "windows": windows, "reason": "no_user"}
 
-    # --- 2) Entraînements du user ---
+    # --- 2) Entraînements du user ---
     try:
         r_e = (
-            supabase.table("Entrainement")
+            sb.table("Entrainement")
             .select("id")
             .eq("Users_Id", uid)
             .order("id", desc=True)
@@ -492,7 +498,7 @@ def score_timeseries(
     target = step * windows
     try:
         r_obs = (
-            supabase.table("Observations")
+            sb.table("Observations")
             .select("id,Score,Entrainement_Id")
             .in_("Entrainement_Id", eids_desc)
             .order("id", desc=True)

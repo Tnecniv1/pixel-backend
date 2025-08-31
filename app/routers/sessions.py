@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Body, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from typing import Any, Dict, List, Optional
 from datetime import date, datetime
 from ..services.evolution import EvolutionService
 import random
 from pydantic import BaseModel
-from ..deps import supabase, get_auth_uid_from_bearer
+from ..deps import supabase, get_auth_uid_from_bearer, user_scoped_client, service_client
 from ..services.user_resolver import resolve_or_register_user_id
 import os 
 print("[boot] sessions.py loaded from:", os.path.abspath(__file__))
@@ -169,6 +169,8 @@ def start_entrainement(
     }
 
 
+from ..deps import user_scoped_client  # ← ajoute cet import
+
 @router.post("/entrainement/start_mixte")
 def start_entrainement_mixte(
     user_id: Optional[int] = Query(None),
@@ -180,11 +182,15 @@ def start_entrainement_mixte(
     body: Optional[dict] = Body(default=None),
 ):
     """Crée un Entrainement 'mixte' (Add+Sub+Mul) pour l'utilisateur. Volume total = volume*3."""
+    # 1) client Supabase "scopé utilisateur" à partir du Bearer
+    sb = user_scoped_client(authorization)
+
     if user_id is None:
         auth_uid = auth_uid or get_auth_uid_from_bearer(authorization)
         if not auth_uid:
             raise HTTPException(status_code=400, detail="Fournir user_id ou auth_uid")
-        user_id = resolve_or_register_user_id(supabase, auth_uid, email=email)
+        # 2) utilise sb pour résoudre/inscrire l’utilisateur
+        user_id = resolve_or_register_user_id(sb, auth_uid, email=email)
 
     vol = None
     if isinstance(body, dict):
@@ -203,9 +209,15 @@ def start_entrainement_mixte(
     except Exception:
         raise HTTPException(status_code=422, detail=[{"loc": ["Volume"], "msg": "Volume must be between 1 and 200", "type": "value_error"}])
 
+    # 3) si ton helper accepte un client, passe sb:
+    # pos_add = _get_position_par_type(user_id, "Addition", sb)
+    # pos_sub = _get_position_par_type(user_id, "Soustraction", sb)
+    # pos_mul = _get_position_par_type(user_id, "Multiplication", sb)
+    # Sinon, garde la version actuelle et on ajustera juste après si besoin.
     pos_add = _get_position_par_type(user_id, "Addition")
     pos_sub = _get_position_par_type(user_id, "Soustraction")
     pos_mul = _get_position_par_type(user_id, "Multiplication")
+
     if not (pos_add and pos_sub and pos_mul):
         raise HTTPException(status_code=400, detail="Positions/parcours manquants pour un des types")
 
@@ -217,7 +229,8 @@ def start_entrainement_mixte(
         "Date": date.today().isoformat(),
         "Time": datetime.now().strftime("%H:%M:%S"),
     }
-    ins = supabase.table("Entrainement").insert(payload).execute()
+    # 4) insert via sb (et plus supabase)
+    ins = sb.table("Entrainement").insert(payload).execute()
     data = getattr(ins, "data", []) or []
     if not data:
         raise HTTPException(status_code=500, detail="Insertion Entrainement échouée")
@@ -233,6 +246,7 @@ def start_entrainement_mixte(
         "total_volume": vol * 3,
         "mode": "mixte",
     }
+
 
 
 # -----------------------------------------------------------------------------

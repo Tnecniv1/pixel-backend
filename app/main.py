@@ -29,7 +29,6 @@ def _echo(request: Request):
         "headers": dict(request.headers),
     }
 
-
 @app.middleware("http")
 async def log_auth_header(request: Request, call_next):
     auth = request.headers.get("authorization")

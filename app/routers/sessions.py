@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Header, HTTPException, Query
 from typing import Any, Dict, List, Optional
 from datetime import date, datetime
 from ..services.evolution import EvolutionService
 import random
 from pydantic import BaseModel
-from ..deps import supabase, get_auth_uid_from_bearer, user_scoped_client, service_client
+from ..deps import supabase, get_auth_uid_from_bearer
 from ..services.user_resolver import resolve_or_register_user_id
 import os 
 print("[boot] sessions.py loaded from:", os.path.abspath(__file__))
@@ -169,8 +169,6 @@ def start_entrainement(
     }
 
 
-from ..deps import user_scoped_client  # ← ajoute cet import
-
 @router.post("/entrainement/start_mixte")
 def start_entrainement_mixte(
     user_id: Optional[int] = Query(None),
@@ -182,15 +180,11 @@ def start_entrainement_mixte(
     body: Optional[dict] = Body(default=None),
 ):
     """Crée un Entrainement 'mixte' (Add+Sub+Mul) pour l'utilisateur. Volume total = volume*3."""
-    # 1) client Supabase "scopé utilisateur" à partir du Bearer
-    sb = user_scoped_client(authorization)
-
     if user_id is None:
         auth_uid = auth_uid or get_auth_uid_from_bearer(authorization)
         if not auth_uid:
             raise HTTPException(status_code=400, detail="Fournir user_id ou auth_uid")
-        # 2) utilise sb pour résoudre/inscrire l’utilisateur
-        user_id = resolve_or_register_user_id(sb, auth_uid, email=email)
+        user_id = resolve_or_register_user_id(supabase, auth_uid, email=email)
 
     vol = None
     if isinstance(body, dict):
@@ -209,15 +203,9 @@ def start_entrainement_mixte(
     except Exception:
         raise HTTPException(status_code=422, detail=[{"loc": ["Volume"], "msg": "Volume must be between 1 and 200", "type": "value_error"}])
 
-    # 3) si ton helper accepte un client, passe sb:
-    # pos_add = _get_position_par_type(user_id, "Addition", sb)
-    # pos_sub = _get_position_par_type(user_id, "Soustraction", sb)
-    # pos_mul = _get_position_par_type(user_id, "Multiplication", sb)
-    # Sinon, garde la version actuelle et on ajustera juste après si besoin.
     pos_add = _get_position_par_type(user_id, "Addition")
     pos_sub = _get_position_par_type(user_id, "Soustraction")
     pos_mul = _get_position_par_type(user_id, "Multiplication")
-
     if not (pos_add and pos_sub and pos_mul):
         raise HTTPException(status_code=400, detail="Positions/parcours manquants pour un des types")
 
@@ -229,8 +217,7 @@ def start_entrainement_mixte(
         "Date": date.today().isoformat(),
         "Time": datetime.now().strftime("%H:%M:%S"),
     }
-    # 4) insert via sb (et plus supabase)
-    ins = sb.table("Entrainement").insert(payload).execute()
+    ins = supabase.table("Entrainement").insert(payload).execute()
     data = getattr(ins, "data", []) or []
     if not data:
         raise HTTPException(status_code=500, detail="Insertion Entrainement échouée")
@@ -246,7 +233,6 @@ def start_entrainement_mixte(
         "total_volume": vol * 3,
         "mode": "mixte",
     }
-
 
 
 # -----------------------------------------------------------------------------
@@ -697,77 +683,39 @@ def review_mark_training(body: dict = Body(...)):
 
 
 @router.get("/review/items")
-def get_review_items(
-    entrainement_id: Optional[int] = Query(None, alias="entrainement_id"),
-    authorization: Optional[str] = Header(default=None),
-):
+def get_review_items(entrainement_id: Optional[int] = Query(None)) -> Dict[str, Any]:
     """
-    Récupère les items de review pour un entraînement.
-    Tolère l'absence d'ID (renvoie items vides) afin d'éviter un 422 côté app.
+    Renvoie les Observations FAUX pour un Entrainement donné.
+    - Query: ?entrainement_id=123
+    - Si aucun id fourni, prend le dernier entraînement existant (fallback).
     """
-    if entrainement_id is None:
-        return {"items": [], "entrainement_id": None}
-
-    sb = user_scoped_client(authorization)
-    q = (
-        sb.table("Observations")
-        .select(
-            "id, Entrainement_Id, Parcours_Id, Operateur_Un, Operateur_Deux, "
-            "Operation, Proposition, Correction, Temps_Seconds, Score"
+    # 1) Choisir l'entrainement cible
+    eid = entrainement_id
+    if eid is None:
+        last = (
+            supabase.table("Entrainement")
+            .select("id")
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
         )
-        .eq("Entrainement_Id", entrainement_id)
+        data = getattr(last, "data", []) or []
+        if not data:
+            return {"entrainement_id": None, "count": 0, "items": []}
+        eid = int(data[0]["id"])
+
+    # 2) Récupérer les FAUX de cet entrainement
+    res = (
+        supabase.table("Observations")
+        .select("id, Parcours_Id, Operation, Operateur_Un, Operateur_Deux, Solution")
+        .eq("Entrainement_Id", eid)
+        .eq("Etat", "FAUX")
         .order("id", desc=True)
-        .limit(1000)
         .execute()
     )
-    items: List[Dict] = getattr(q, "data", []) or []
-    return {"items": items, "entrainement_id": entrainement_id}
+    items: List[Dict[str, Any]] = getattr(res, "data", []) or []
 
-
-@router.post("/review/items")
-def review_items_post(
-    entrainement_id: Optional[int] = Query(None, alias="entrainement_id"),
-    body: Optional[dict] = Body(default=None),
-    authorization: Optional[str] = Header(default=None),
-):
-    """
-    Même chose que GET mais accepte aussi l'ID dans le body:
-    { "entrainement_id": 123 }  (backward/forward compatible avec l'app)
-    """
-    # 1) récupérer l'id depuis body si pas en query
-    if entrainement_id is None and isinstance(body, dict):
-        # tolérer différentes clés potentiellement utilisées côté app
-        for k in ("entrainement_id", "Entrainement_Id", "training_id", "id"):
-            if body.get(k) is not None:
-                try:
-                    entrainement_id = int(body[k])
-                    break
-                except Exception:
-                    pass
-
-    if entrainement_id is None:
-        # on renvoie la même forme d'erreur que Pydantic pour cohérence UI
-        raise HTTPException(
-            status_code=422,
-            detail=[{"loc": ["query", "entrainement_id"], "msg": "Field required", "type": "missing"}],
-        )
-
-    sb = user_scoped_client(authorization)
-    q = (
-        sb.table("Observations")
-        .select(
-            "id, Entrainement_Id, Parcours_Id, Operateur_Un, Operateur_Deux, "
-            "Operation, Proposition, Correction, Temps_Seconds, Score"
-        )
-        .eq("Entrainement_Id", entrainement_id)
-        .order("id", desc=True)
-        .limit(1000)
-        .execute()
-    )
-    items: List[Dict] = getattr(q, "data", []) or []
-    return {"items": items, "entrainement_id": entrainement_id}
-
-
+    return {"entrainement_id": eid, "count": len(items), "items": items}
 # -----------------------------------------------------------------------------
 # (Optionnel) Compat : anciens endpoints de correction -> 410 Gone
 # -----------------------------------------------------------------------------

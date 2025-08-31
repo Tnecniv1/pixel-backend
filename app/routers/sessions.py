@@ -4,9 +4,9 @@ from datetime import date, datetime
 from ..services.evolution import EvolutionService
 import random
 from pydantic import BaseModel
-from ..deps import supabase, get_auth_uid_from_bearer
+from ..deps import supabase, get_auth_uid_from_bearer, user_scoped_client  # ← ajout user_scoped_client
 from ..services.user_resolver import resolve_or_register_user_id
-import os 
+import os
 print("[boot] sessions.py loaded from:", os.path.abspath(__file__))
 
 # -----------------------------------------------------------------------------
@@ -56,10 +56,10 @@ def _gen_mul(a_min: int, a_max: int, b_min: int, b_max: int):
     }
 
 
-def _get_position_par_type(user_id: int, type_op: str):
-    """Retourne le parcours courant pour un type, sinon le premier parcours du type."""
+def _get_position_par_type(sb, user_id: int, type_op: str):
+    """Retourne le parcours courant pour un type, sinon le premier parcours du type (via client user-scopé)."""
     suivis = (
-        supabase.table("Suivi_Parcours")
+        sb.table("Suivi_Parcours")
         .select("Parcours_Id,id")
         .eq("Users_Id", user_id)
         .order("id", desc=True)
@@ -70,7 +70,7 @@ def _get_position_par_type(user_id: int, type_op: str):
     )
     for s in suivis:
         p_rows = (
-            supabase.table("Parcours")
+            sb.table("Parcours")
             .select("*")
             .eq("id", s["Parcours_Id"])
             .limit(1)
@@ -81,7 +81,7 @@ def _get_position_par_type(user_id: int, type_op: str):
             return p_rows[0]
 
     p_rows = (
-        supabase.table("Parcours")
+        sb.table("Parcours")
         .select("*")
         .eq("Type_Operation", type_op)
         .order("Niveau")
@@ -91,7 +91,7 @@ def _get_position_par_type(user_id: int, type_op: str):
     )
     if not p_rows:
         p_rows = (
-            supabase.table("Parcours")
+            sb.table("Parcours")
             .select("*")
             .eq("Type_Operation", type_op)
             .order("id")
@@ -101,11 +101,18 @@ def _get_position_par_type(user_id: int, type_op: str):
         )
     return p_rows[0] if p_rows else None
 
+
 @router.get("/parcours/positions_currentes")
-def get_positions_currentes(entrainement_id: int = Query(..., alias="entrainement_id")):
+def get_positions_currentes(
+    entrainement_id: int = Query(..., alias="entrainement_id"),
+    authorization: Optional[str] = Header(default=None),  # ← pour client user-scopé
+):
+    # Client lié au JWT
+    sb = user_scoped_client(authorization)
+
     # 1) Récupérer l'utilisateur de l'entraînement
     entr_row = (
-        supabase.from_("Entrainement")
+        sb.from_("Entrainement")
         .select("Users_Id")
         .eq("id", entrainement_id)
         .limit(1)
@@ -118,7 +125,7 @@ def get_positions_currentes(entrainement_id: int = Query(..., alias="entrainemen
     user_id = int(entr_row[0]["Users_Id"])
 
     # 2) Positions courantes (auto-niveau 1 si aucun suivi)
-    evo = EvolutionService(supabase)
+    evo = EvolutionService(sb)  # ← utiliser le client lié au JWT
     positions = evo.positions_for_user(user_id)
 
     return {
@@ -137,14 +144,18 @@ def start_entrainement(
     email: Optional[str] = Query(None),
     type: str = Query(..., pattern="^(Addition|Soustraction|Multiplication)$"),
     volume: int = Query(..., ge=1, le=200),
+    authorization: Optional[str] = Header(default=None),  # ← pour client user-scopé
 ):
     """Crée un Entrainement simple pour un type donné."""
+    sb = user_scoped_client(authorization)
+
     if user_id is None:
         if not auth_uid:
             raise HTTPException(status_code=400, detail="Fournir user_id ou auth_uid")
+        # user_resolver reste côté service-role (mapping users_map)
         user_id = resolve_or_register_user_id(supabase, auth_uid, email=email)
 
-    pos = _get_position_par_type(user_id, type)
+    pos = _get_position_par_type(sb, user_id, type)
     if not pos or "id" not in pos:
         raise HTTPException(status_code=400, detail=f"Aucun parcours disponible pour {type}")
 
@@ -154,9 +165,8 @@ def start_entrainement(
         "Users_Id": user_id,
         "Parcours_Id": parcours_id,
         "Volume": volume,
-        # La DB peut avoir des colonnes Date/Time (défaut côté DB ou triggers)
     }
-    res = supabase.table("Entrainement").insert(payload).execute()
+    res = sb.table("Entrainement").insert(payload).execute()
     data = getattr(res, "data", []) or []
     if not data:
         raise HTTPException(status_code=500, detail="Insertion Entrainement échouée")
@@ -180,6 +190,8 @@ def start_entrainement_mixte(
     body: Optional[dict] = Body(default=None),
 ):
     """Crée un Entrainement 'mixte' (Add+Sub+Mul) pour l'utilisateur. Volume total = volume*3."""
+    sb = user_scoped_client(authorization)
+
     if user_id is None:
         auth_uid = auth_uid or get_auth_uid_from_bearer(authorization)
         if not auth_uid:
@@ -203,9 +215,9 @@ def start_entrainement_mixte(
     except Exception:
         raise HTTPException(status_code=422, detail=[{"loc": ["Volume"], "msg": "Volume must be between 1 and 200", "type": "value_error"}])
 
-    pos_add = _get_position_par_type(user_id, "Addition")
-    pos_sub = _get_position_par_type(user_id, "Soustraction")
-    pos_mul = _get_position_par_type(user_id, "Multiplication")
+    pos_add = _get_position_par_type(sb, user_id, "Addition")
+    pos_sub = _get_position_par_type(sb, user_id, "Soustraction")
+    pos_mul = _get_position_par_type(sb, user_id, "Multiplication")
     if not (pos_add and pos_sub and pos_mul):
         raise HTTPException(status_code=400, detail="Positions/parcours manquants pour un des types")
 
@@ -217,7 +229,7 @@ def start_entrainement_mixte(
         "Date": date.today().isoformat(),
         "Time": datetime.now().strftime("%H:%M:%S"),
     }
-    ins = supabase.table("Entrainement").insert(payload).execute()
+    ins = sb.table("Entrainement").insert(payload).execute()
     data = getattr(ins, "data", []) or []
     if not data:
         raise HTTPException(status_code=500, detail="Insertion Entrainement échouée")
@@ -251,6 +263,8 @@ def generer_exercices_mixte(
     seed: Optional[int] = Query(None),
 ):
     """Génère n exercices par type (Add/Sub/Mul) en fonction du parcours courant de l'utilisateur."""
+    sb = user_scoped_client(authorization)
+
     try:
         if user_id is None:
             auth_uid = auth_uid or get_auth_uid_from_bearer(authorization)
@@ -274,7 +288,7 @@ def generer_exercices_mixte(
         types = ["Addition", "Soustraction", "Multiplication"]
         positions: Dict[str, Dict[str, Any]] = {}
         for t in types:
-            pos = _get_position_par_type(user_id, t)
+            pos = _get_position_par_type(sb, user_id, t)
             if not pos:
                 raise HTTPException(status_code=400, detail=f"Aucun niveau (Parcours) disponible pour {t}")
             positions[t] = pos
@@ -325,12 +339,14 @@ def generer_exercices_mixte(
 # Observations (nouvelle logique : DB calcule Etat/Score/Marge_Erreur/Solution)
 # -----------------------------------------------------------------------------
 @router.post("/observations")
-def post_observations(payload: Any = Body(...)):
+def post_observations(payload: Any = Body(...), authorization: Optional[str] = Header(default=None)):
     """Insert des observations.
     Reçoit soit un array d'objets, soit { items: [...] }.
     Champs requis par élément :
       - Entrainement_Id, Parcours_Id, Operateur_Un, Operateur_Deux, Operation, Proposition, (optionnel) Temps_Seconds, (optionnel) Correction
     """
+    sb = user_scoped_client(authorization)
+
     # ---------- parsing entrée (inchangé) ----------
     if isinstance(payload, dict) and isinstance(payload.get("items"), list):
         items = payload["items"]
@@ -362,9 +378,9 @@ def post_observations(payload: Any = Body(...)):
         except Exception as e:
             raise HTTPException(422, detail=f"Observation[{i}] invalide: {e}")
 
-    # ---------- insertion (inchangée) ----------
+    # ---------- insertion ----------
     print("[DEBUG] rows to insert:", rows)
-    res = supabase.table("Observations").insert(rows).execute()
+    res = sb.table("Observations").insert(rows).execute()
     data = getattr(res, "data", []) or []
     err = getattr(res, "error", None)
     if err:
@@ -372,8 +388,7 @@ def post_observations(payload: Any = Body(...)):
     if not data:
         raise HTTPException(500, detail="Insertion Observations échouée")
 
-    # ---------- ÉVALUATION D'ÉVOLUTION (ajout) ----------
-    # Helper local pour normaliser l'opération côté service
+    # ---------- ÉVALUATION D'ÉVOLUTION ----------
     def _norm_op(db_val: str) -> Optional[str]:
         v = (db_val or "").strip().lower()
         if v in ("addition", "soustraction", "multiplication"):
@@ -385,23 +400,20 @@ def post_observations(payload: Any = Body(...)):
 
     evolutions: List[Dict[str, Any]] = []
     positions_by_user: Dict[int, Dict[str, Any]] = {}
-    evolution_error: Optional[str] = None   # ← utile pour débug si 500
+    evolution_error: Optional[str] = None
 
     try:
         if entr_ids:
-            # 2) Map Entrainement -> Users_Id  ✅ UTILISER from_() (lecture)
+            # Petit helper local qui utilise le client user-scopé
             def _query(table: str, columns: str = "*"):
-                b = supabase.from_(table)
-                # certains SDK n'ont pas .select()
+                b = sb.from_(table)
                 sel = getattr(b, "select", None)
                 if callable(sel):
                     return sel(columns)
-                # fallback: essayer via table()
-                b2 = supabase.table(table)
+                b2 = sb.table(table)
                 sel2 = getattr(b2, "select", None)
                 if callable(sel2):
                     return sel2(columns)
-                # dernier recours: renvoyer le builder tel quel
                 return b
 
             entr_rows = (
@@ -411,10 +423,8 @@ def post_observations(payload: Any = Body(...)):
                 .data
                 or []
             )
-            
             entr_to_user = {int(r["id"]): int(r["Users_Id"]) for r in entr_rows if r.get("Users_Id") is not None}
 
-            # 3) Construire les paires (user, operation) touchées dans CE batch
             per_user_ops: Dict[int, set] = {}
             for r in data:
                 eid = r.get("Entrainement_Id")
@@ -426,29 +436,24 @@ def post_observations(payload: Any = Body(...)):
                     continue
                 per_user_ops.setdefault(uid, set()).add(op_norm)
 
-            # 4) Évaluer & enregistrer si besoin
-            evo = EvolutionService(supabase)
+            evo = EvolutionService(sb)
             for uid, ops in per_user_ops.items():
                 for op in ops:
                     maybe = evo.evaluate_and_record_if_needed(uid, op)
                     if maybe:
                         evolutions.append(maybe)
-                # 5) Positions courantes pour ce user
                 positions_by_user[uid] = evo.positions_for_user(uid)
 
     except Exception as e:
-        # On capture l'erreur d'évolution dans la réponse (facilite le débug Postman)
         evolution_error = str(e)
 
-    # ---------- réponse enrichie ----------
     return {
         "inserted": len(data),
         "ids": [r.get("id") for r in data],
-        "evolutions": evolutions,           # liste (peut être vide si critère non atteint)
-        "positions": positions_by_user,     # { user_id: { addition:{...}, soustraction:{...}, multiplication:{...} }
-        "evolution_error": evolution_error  # null si RAS; string si une exception a été capturée
+        "evolutions": evolutions,
+        "positions": positions_by_user,
+        "evolution_error": evolution_error
     }
-
 
 
 # -----------------------------------------------------------------------------
@@ -473,67 +478,52 @@ def record_correction(
     Body: { "Entrainement_Id": <int> }  (or "entrainement_id")
     Inserts a row into Corrections with the next attempt number and returns it.
     """
+    sb = user_scoped_client(authorization)
+
     # --- read and normalize input
     eid = body.get("Entrainement_Id") or body.get("entrainement_id")
     if not isinstance(eid, int):
         raise HTTPException(status_code=422, detail="Entrainement_Id must be an integer")
 
-    # --- (optional) apply the user's JWT so RLS can authorize the insert/select
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split(" ", 1)[1].strip()
-        try:
-            supabase.postgrest.auth(token)
-        except Exception:
-            # don't crash if auth() fails; RLS will still decide
-            pass
+    # Ensure the training exists and is visible under RLS (belongs to this user)
+    ent = (
+        sb.table("Entrainement")
+        .select("id, Users_Id")
+        .eq("id", eid)
+        .limit(1)
+        .execute()
+    )
+    ent_row = (getattr(ent, "data", []) or [None])[0]
+    if not ent_row:
+        raise HTTPException(status_code=404, detail="Entrainement introuvable ou non autorisé")
 
-    try:
-        # Ensure the training exists and is visible under RLS (belongs to this user)
-        ent = (
-            supabase.table("Entrainement")
-            .select("id, Users_Id")
-            .eq("id", eid)
-            .limit(1)
-            .execute()
-        )
-        ent_row = (getattr(ent, "data", []) or [None])[0]
-        if not ent_row:
-            raise HTTPException(status_code=404, detail="Entrainement introuvable ou non autorisé")
+    # Count existing correction attempts for this training
+    count_res = sb.table("Corrections").select("id", count="exact").eq("Entrainement_Id", eid).execute()
+    attempt = getattr(count_res, "count", None)
+    if attempt is None:
+        attempt = len(getattr(count_res, "data", []) or [])
+    attempt += 1  # next attempt number
 
-        # Count existing correction attempts for this training
-        # (use count="exact" if available; otherwise fallback to len(data))
-        count_res = supabase.table("Corrections").select("id", count="exact").eq("Entrainement_Id", eid).execute()
-        attempt = getattr(count_res, "count", None)
-        if attempt is None:
-            # fallback if library doesn't expose .count
-            attempt = len(getattr(count_res, "data", []) or [])
-        attempt += 1  # next attempt number
+    # Insert the correction record
+    ins = (
+        sb.table("Corrections")
+        .insert({"Entrainement_Id": eid, "Tentative": attempt})
+        .execute()
+    )
+    data = getattr(ins, "data", []) or []
+    if not data:
+        raise HTTPException(status_code=500, detail="Insertion Corrections échouée")
 
-        # Insert the correction record
-        ins = (
-            supabase.table("Corrections")
-            .insert({"Entrainement_Id": eid, "Tentative": attempt})
-            .execute()
-        )
-        data = getattr(ins, "data", []) or []
-        if not data:
-            raise HTTPException(status_code=500, detail="Insertion Corrections échouée")
+    return {"attempt": attempt, "id": data[0].get("id")}
 
-        return {"attempt": attempt, "id": data[0].get("id")}
-    finally:
-        # clean PostgREST context if we set a bearer
-        if token:
-            try:
-                supabase.postgrest.auth(None)
-            except Exception:
-                pass
 
 @router.get("/review/last")
-def review_last_faux():
-    """Retourne les observations FAUX du dernier Entrainement (non filtré par user ici)."""
+def review_last_faux(authorization: Optional[str] = Header(default=None)):
+    """Retourne les observations FAUX du dernier Entrainement (filtré par RLS du user)."""
+    sb = user_scoped_client(authorization)
+
     last = (
-        supabase.table("Entrainement").select("id").order("id", desc=True).limit(1).execute()
+        sb.table("Entrainement").select("id").order("id", desc=True).limit(1).execute()
     )
     ldata = getattr(last, "data", []) or []
     if not ldata:
@@ -541,7 +531,7 @@ def review_last_faux():
     eid = ldata[0]["id"]
 
     res = (
-        supabase.table("Observations")
+        sb.table("Observations")
         .select("id,Parcours_Id,Operation,Operateur_Un,Operateur_Deux,Solution")
         .eq("Entrainement_Id", eid)
         .eq("Etat", "FAUX")
@@ -565,7 +555,7 @@ def _expected_from_row(op_name: Optional[str], a: Optional[int], b: Optional[int
 
 
 @router.post("/review/verify_mark")
-def verify_mark(body: Dict[str, Any] = Body(...)):
+def verify_mark(body: Dict[str, Any] = Body(...), authorization: Optional[str] = Header(default=None)):
     """
     Body accepté (tolérant sur les noms) :
     {
@@ -576,6 +566,8 @@ def verify_mark(body: Dict[str, Any] = Body(...)):
       ]
     }
     """
+    sb = user_scoped_client(authorization)
+
     eid = body.get("Entrainement_Id") or body.get("entrainement_id")
     tries = body.get("tries") or []
     if not isinstance(eid, int) or not isinstance(tries, list):
@@ -591,16 +583,14 @@ def verify_mark(body: Dict[str, Any] = Body(...)):
         obs_id = t.get("id") or t.get("Observation_Id")
         rep = t.get("reponse") if "reponse" in t else t.get("Reponse")
 
-        # ignore les entrées mal formées
         if not isinstance(obs_id, int):
             continue
         if rep is None:
             missing_ids.append(obs_id)
             continue
 
-        # Charge l'observation
         q = (
-            supabase.table("Observations")
+            sb.table("Observations")
             .select("id, Entrainement_Id, Operation, Operateur_Un, Operateur_Deux, Solution")
             .eq("id", obs_id)
             .limit(1)
@@ -611,7 +601,6 @@ def verify_mark(body: Dict[str, Any] = Body(...)):
             missing_ids.append(obs_id)
             continue
 
-        # Vérifie l'appartenance à l'entraînement
         try:
             row_eid = int(row.get("Entrainement_Id"))
         except Exception:
@@ -620,12 +609,10 @@ def verify_mark(body: Dict[str, Any] = Body(...)):
             missing_ids.append(obs_id)
             continue
 
-        # Nom d'opération : on supporte Operation (préféré) puis Type (legacy)
         op_name = row.get("Operation") or row.get("Type")
         a = row.get("Operateur_Un")
         b = row.get("Operateur_Deux")
 
-        # Calcule attendu à la volée ; fallback sur Solution si présente
         expected = _expected_from_row(op_name, a, b)
         if expected is None and row.get("Solution") is not None:
             try:
@@ -654,8 +641,9 @@ def verify_mark(body: Dict[str, Any] = Body(...)):
         "incorrect_sample": [{"id": i} for i in incorrect_ids][:5],
     }
 
+
 @router.post("/review/mark_training")
-def review_mark_training(body: dict = Body(...)):
+def review_mark_training(body: dict = Body(...), authorization: Optional[str] = Header(default=None)):
     """
     Body attendu :
     {
@@ -663,37 +651,38 @@ def review_mark_training(body: dict = Body(...)):
     }
     -> Marque Entrainement.Correction = 'OUI'
     """
+    sb = user_scoped_client(authorization)
+
     eid = body.get("Entrainement_Id") or body.get("entrainement_id")
     if not isinstance(eid, int):
         raise HTTPException(status_code=422, detail="Champ 'Entrainement_Id' requis (int)")
 
-    # Met à jour l'entraînement
     upd = (
-        supabase.table("Entrainement")
+        sb.table("Entrainement")
         .update({"Correction": "OUI"})
         .eq("id", eid)
         .execute()
     )
     data = getattr(upd, "data", []) or []
     if not data:
-        # soit l'id n'existe pas, soit RLS a bloqué l'update
         raise HTTPException(status_code=404, detail="Entrainement introuvable ou non autorisé")
 
     return {"updated": len(data), "entrainement_id": eid, "correction": "OUI"}
 
 
 @router.get("/review/items")
-def get_review_items(entrainement_id: Optional[int] = Query(None)) -> Dict[str, Any]:
+def get_review_items(entrainement_id: Optional[int] = Query(None), authorization: Optional[str] = Header(default=None)) -> Dict[str, Any]:
     """
     Renvoie les Observations FAUX pour un Entrainement donné.
     - Query: ?entrainement_id=123
     - Si aucun id fourni, prend le dernier entraînement existant (fallback).
     """
-    # 1) Choisir l'entrainement cible
+    sb = user_scoped_client(authorization)
+
     eid = entrainement_id
     if eid is None:
         last = (
-            supabase.table("Entrainement")
+            sb.table("Entrainement")
             .select("id")
             .order("id", desc=True)
             .limit(1)
@@ -704,9 +693,8 @@ def get_review_items(entrainement_id: Optional[int] = Query(None)) -> Dict[str, 
             return {"entrainement_id": None, "count": 0, "items": []}
         eid = int(data[0]["id"])
 
-    # 2) Récupérer les FAUX de cet entrainement
     res = (
-        supabase.table("Observations")
+        sb.table("Observations")
         .select("id, Parcours_Id, Operation, Operateur_Un, Operateur_Deux, Solution")
         .eq("Entrainement_Id", eid)
         .eq("Etat", "FAUX")
@@ -716,6 +704,8 @@ def get_review_items(entrainement_id: Optional[int] = Query(None)) -> Dict[str, 
     items: List[Dict[str, Any]] = getattr(res, "data", []) or []
 
     return {"entrainement_id": eid, "count": len(items), "items": items}
+
+
 # -----------------------------------------------------------------------------
 # (Optionnel) Compat : anciens endpoints de correction -> 410 Gone
 # -----------------------------------------------------------------------------

@@ -1,32 +1,31 @@
 # app/routers/parcours.py
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Header
 from typing import Optional, Dict, Any, Literal, List
-from ..deps import supabase
-from jose import jwt
+from ..deps import supabase, user_scoped_client  # ← ajout user_scoped_client
 import logging
-from datetime import date, timezone
-logger = logging.getLogger("uvicorn.error")
 
+logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/parcours", tags=["parcours"])
 
 OpType = Literal["Addition", "Soustraction", "Multiplication"]
 
 # -------------------------------------------------------------------
-# Helpers communs
+# Helpers communs (version "sb"-aware)
 # -------------------------------------------------------------------
 def _infer_user_id(
+    sb,
     user_id: Optional[int],
     entrainement_id: Optional[int],
     parcours_id: Optional[int],
 ) -> Optional[int]:
-    """Retrouve Users_Id à partir de l’un des 3 indices."""
+    """Retrouve Users_Id à partir de l’un des 3 indices en utilisant le client lié au JWT."""
     if user_id is not None:
         return int(user_id)
 
     if entrainement_id is not None:
         try:
             r = (
-                supabase.table("Entrainement")  # ✅ singulier
+                sb.table("Entrainement")  # ✅ singulier
                 .select("Users_Id")
                 .eq("id", entrainement_id)
                 .limit(1)
@@ -41,7 +40,7 @@ def _infer_user_id(
     if parcours_id is not None:
         try:
             r = (
-                supabase.table("Suivi_Parcours")
+                sb.table("Suivi_Parcours")
                 .select("Users_Id")
                 .eq("Parcours_Id", parcours_id)
                 .order("id", desc=True)
@@ -57,14 +56,14 @@ def _infer_user_id(
     return None
 
 
-def _last_suivi_for_type(users_id: int, typ: OpType) -> Optional[Dict[str, Any]]:
+def _last_suivi_for_type(sb, users_id: int, typ: OpType) -> Optional[Dict[str, Any]]:
     """
     Retourne la dernière position (niveau + meta) pour un type d'opération donné.
     Cherche dans Suivi_Parcours puis résout le Parcours pour récupérer Niveau & Type.
     """
     try:
         res = (
-            supabase.table("Suivi_Parcours")
+            sb.table("Suivi_Parcours")
             .select("id,Users_Id,Parcours_Id,Date,Taux_Reussite,Type_Evolution")
             .eq("Users_Id", users_id)
             .order("id", desc=True)
@@ -82,7 +81,7 @@ def _last_suivi_for_type(users_id: int, typ: OpType) -> Optional[Dict[str, Any]]
             continue
         try:
             p = (
-                supabase.table("Parcours")
+                sb.table("Parcours")
                 .select("id,Niveau,Type_Operation")
                 .eq("id", pid)
                 .limit(1)
@@ -107,7 +106,7 @@ def _last_suivi_for_type(users_id: int, typ: OpType) -> Optional[Dict[str, Any]]
     return None
 
 
-def _last_suivi_by_type(users_id: int) -> Dict[str, Dict[str, Any]]:
+def _last_suivi_by_type(sb, users_id: int) -> Dict[str, Dict[str, Any]]:
     """
     Retourne, pour chaque type d’opération, le dernier suivi + le parcours associé
     + le critère et les 'restantes' avant prochain test critique (calculé avec Derniere_Observation_Id).
@@ -117,7 +116,7 @@ def _last_suivi_by_type(users_id: int) -> Dict[str, Dict[str, Any]]:
 
     try:
         rs = (
-            supabase.table("Suivi_Parcours")
+            sb.table("Suivi_Parcours")
             .select("id,Users_Id,Parcours_Id,Date,Taux_Reussite,Type_Evolution,Derniere_Observation_Id")
             .eq("Users_Id", users_id)
             .order("id", desc=True)
@@ -136,7 +135,7 @@ def _last_suivi_by_type(users_id: int) -> Dict[str, Dict[str, Any]]:
 
         try:
             pr = (
-                supabase.table("Parcours")
+                sb.table("Parcours")
                 .select("id,Type_Operation,Niveau,Critere")
                 .eq("id", pid)
                 .limit(1)
@@ -160,7 +159,7 @@ def _last_suivi_by_type(users_id: int) -> Dict[str, Dict[str, Any]]:
         # ✅ compte les obs réalisées DEPUIS le dernier test critique
         try:
             cnt = (
-                supabase.table("Observations")
+                sb.table("Observations")
                 .select("id", count="exact")
                 .eq("Parcours_Id", pid)
                 .gt("id", last_obs_id)
@@ -189,7 +188,7 @@ def _last_suivi_by_type(users_id: int) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def _sum_user_score_via_entrainement(users_id: int) -> int:
+def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
     """
     Score TOTAL = somme de Observations.Score pour *tous* les Entrainement du user.
     Hypothèse: Observations.Score est +/-1 (ou numérique).
@@ -197,7 +196,7 @@ def _sum_user_score_via_entrainement(users_id: int) -> int:
     # 1) ids d'entraînements (table au singulier)
     try:
         res_e = (
-            supabase.table("Entrainement")
+            sb.table("Entrainement")
             .select("id")
             .eq("Users_Id", users_id)
             .limit(50000)
@@ -220,7 +219,7 @@ def _sum_user_score_via_entrainement(users_id: int) -> int:
         chunk = eids[i : i + BATCH]
         try:
             res_o = (
-                supabase.table("Observations")
+                sb.table("Observations")
                 .select("Score")
                 .in_("Entrainement_Id", chunk)
                 .limit(200000)
@@ -251,15 +250,17 @@ def get_parcours_position(
     user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
     entrainement_id: Optional[int] = Query(None, description="(optionnel) via Entrainement.id"),
     parcours_id: Optional[int] = Query(None, description="(optionnel) via Suivi_Parcours.Parcours_Id"),
+    authorization: Optional[str] = Header(default=None),  # ← client RLS
 ):
-    uid = _infer_user_id(user_id, entrainement_id, parcours_id)
+    sb = user_scoped_client(authorization)
+    uid = _infer_user_id(sb, user_id, entrainement_id, parcours_id)
     if uid is None:
         raise HTTPException(
             status_code=422,
             detail="Impossible de déterminer l'utilisateur (user_id / entrainement_id / parcours_id).",
         )
 
-    pos = _last_suivi_for_type(uid, type)
+    pos = _last_suivi_for_type(sb, uid, type)
     if not pos:
         return {"detail": f"Aucune position pour {type}."}
     return pos
@@ -271,18 +272,21 @@ def get_parcours_position(
 def positions_currentes(
     user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
     parcours_id: Optional[int] = Query(None, description="Parcours seed si user_id absent"),
+    authorization: Optional[str] = Header(default=None),  # ← client RLS
 ):
     """
     Renvoie les niveaux actuels par opération (Addition/Soustraction/Multiplication),
     + score_points = somme brute de Observations.Score sur *tous* les entraînements du user,
     + score_global = moyenne des taux (si dispo).
     """
+    sb = user_scoped_client(authorization)
+
     # 1) déterminer l'utilisateur
     uid: Optional[int] = user_id
     if uid is None and parcours_id is not None:
         try:
             sp = (
-                supabase.table("Suivi_Parcours")
+                sb.table("Suivi_Parcours")
                 .select("Users_Id")
                 .eq("Parcours_Id", parcours_id)
                 .order("id", desc=True)
@@ -305,11 +309,11 @@ def positions_currentes(
         }
 
     # 2) positions par type
-    by_type = _last_suivi_by_type(uid)
+    by_type = _last_suivi_by_type(sb, uid)
 
     # 3) score total (lifetime)
     try:
-        score_total = _sum_user_score_via_entrainement(uid)
+        score_total = _sum_user_score_via_entrainement(sb, uid)
     except Exception as e:
         print("[parcours] positions_currentes - err score total:", e)
         score_total = 0
@@ -334,16 +338,13 @@ def positions_currentes(
 # Optionnel: endpoint dédié pour le score total
 # -------------------------------------------------------------------
 @router.get("/score_total")
-def get_user_score_total(user_id: int = Query(..., description="ID interne (BIGINT) de l'utilisateur")):
-    total = _sum_user_score_via_entrainement(user_id)
+def get_user_score_total(
+    user_id: int = Query(..., description="ID interne (BIGINT) de l'utilisateur"),
+    authorization: Optional[str] = Header(default=None),  # ← client RLS
+):
+    sb = user_scoped_client(authorization)
+    total = _sum_user_score_via_entrainement(sb, user_id)
     return {"user_id": user_id, "score_points": total}
-    """
-    Renvoie le score TOTAL de l'utilisateur (somme de Observations.Score
-    pour tous ses Entrainement).
-    """
-    total = _sum_user_score_via_entrainement(user_id)
-    return {"user_id": user_id, "score_points": total}
-
 
 @router.get("/score_cumule")
 def score_cumule(
@@ -351,22 +352,27 @@ def score_cumule(
     parcours_id: Optional[int] = Query(None, description="Parcours seed pour inférer l'utilisateur"),
     window_obs: int = Query(1000, ge=100, le=5000, description="Nb max d'observations (fenêtre)"),
     bucket: int = Query(100, ge=10, le=1000, description="Taille d'un paquet d'observations"),
+    authorization: Optional[str] = Header(default=None),  # ← client RLS
 ):
     """
     Évolution du SCORE CUMULÉ (somme de Score) toutes opérations confondues,
     par paquets de `bucket` observations, sur la fenêtre des `window_obs` dernières obs.
     Sortie: { "points": [{"x":1,"kpi":cumul1}, ...], "meta": {...} }
     """
-    # --- Résoudre l'user à partir de user_id ou parcours_id (même logique que parcours.py) ---
+    sb = user_scoped_client(authorization)
+
+    # --- Résoudre l'user à partir de user_id ou parcours_id ---
     def _infer_user_from_parcours(pid: Optional[int]) -> Optional[int]:
         if pid is None:
             return None
         try:
-            r = (supabase.table("Suivi_Parcours")
+            r = (
+                sb.table("Suivi_Parcours")
                  .select("Users_Id")
                  .eq("Parcours_Id", pid)
                  .order("id", desc=True)
-                 .limit(1).execute())
+                 .limit(1).execute()
+            )
             row = (getattr(r, "data", []) or [None])[0]
             if row and row.get("Users_Id") is not None:
                 return int(row["Users_Id"])
@@ -380,11 +386,13 @@ def score_cumule(
 
     # --- IDs d'entraînements du user ---
     try:
-        e = (supabase.table("Entrainement")
+        e = (
+            sb.table("Entrainement")
              .select("id")
              .eq("Users_Id", uid)
              .order("id", desc=True)
-             .limit(100000).execute())
+             .limit(100000).execute()
+        )
         eids = [int(r["id"]) for r in (getattr(e, "data", []) or []) if r.get("id") is not None]
         if not eids:
             return {"points": [], "meta": {"bucket": bucket, "window_obs": window_obs}}
@@ -393,12 +401,14 @@ def score_cumule(
 
     # --- Dernières observations liées à ces entraînements (fenêtre) ---
     try:
-        o = (supabase.table("Observations")
+        o = (
+            sb.table("Observations")
              .select('"id","Score"')
              .in_("Entrainement_Id", eids)
              .order("id", desc=True)
              .limit(window_obs)
-             .execute())
+             .execute()
+        )
         obs = getattr(o, "data", []) or []
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Supabase error Observations: {ex}")
@@ -432,7 +442,7 @@ def score_cumule(
         cumul += sum(chunk)
         points.append({"x": len(points)+1, "kpi": cumul})
 
-    # Garder les 10 derniers paquets (1000 obs si bucket=100)
+    # Garder les 10 derniers paquets
     points = points[-10:]
 
     return {"points": points, "meta": {"bucket": bucket, "window_obs": window_obs}}
@@ -444,18 +454,20 @@ def score_timeseries(
     parcours_id: int | None = Query(None, description="Si fourni, on infère l'utilisateur via Suivi_Parcours"),
     step: int = Query(100, ge=1, description="taille d'une fenêtre (obs/point)"),
     windows: int = Query(10, ge=1, le=50, description="nombre de points"),
+    authorization: Optional[str] = Header(default=None),  # ← client RLS
 ):
     """
     Evolution du score CUMULÉ (toutes opérations), par tranches de `step` obs,
     sur les `windows` dernières tranches (ex: 10×100 = 1000 obs max).
     """
+    sb = user_scoped_client(authorization)
 
     # --- 1) Résoudre l'utilisateur ---
     uid = user_id
     if uid is None and parcours_id is not None:
         try:
             r = (
-                supabase.table("Suivi_Parcours")
+                sb.table("Suivi_Parcours")
                 .select("Users_Id")
                 .eq("Parcours_Id", parcours_id)
                 .order("id", desc=True)
@@ -471,10 +483,10 @@ def score_timeseries(
     if uid is None:
         return {"points": [], "step": step, "windows": windows, "reason": "no_user"}
 
-    # --- 2) Entraînements du user ---
+    # --- 2) Entraînements du user ---
     try:
         r_e = (
-            supabase.table("Entrainement")
+            sb.table("Entrainement")
             .select("id")
             .eq("Users_Id", uid)
             .order("id", desc=True)
@@ -492,7 +504,7 @@ def score_timeseries(
     target = step * windows
     try:
         r_obs = (
-            supabase.table("Observations")
+            sb.table("Observations")
             .select("id,Score,Entrainement_Id")
             .in_("Entrainement_Id", eids_desc)
             .order("id", desc=True)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Header
 from pydantic import BaseModel, EmailStr
 from ..deps import supabase, user_scoped_client
 from ..services.user_resolver import resolve_or_register_user_id

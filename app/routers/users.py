@@ -33,12 +33,18 @@ def resolve_display_names_get(
     authorization: str = Header(default=None)
     ):
 
+    """
+    Ex: /users/resolve?ids=1,2,8
+    Retourne: {"users":[{"id":1,"name":"Alice"}, ...]}
+    """
+
     raw_ids = [x for x in ids.split(",") if x.strip()]
     if not raw_ids:
         return {"users": []}
 
     sb = user_scoped_client(request.headers.get("authorization"))
-    q = sb.table("Users").select("id, name").in_("id", raw_ids).execute()    data = getattr(q, "data", []) or []
+    q = sb.table("Users").select("id, name").in_("id", raw_ids).execute()    
+    data = getattr(q, "data", []) or []
     out = [{"id": int(r["id"]), "name": r.get("name") or ""} for r in data if "id" in r]
     return {"users": out}
 

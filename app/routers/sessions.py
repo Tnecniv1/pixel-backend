@@ -697,39 +697,80 @@ def review_mark_training(body: dict = Body(...)):
 
 
 @router.get("/review/items")
-def get_review_items(entrainement_id: Optional[int] = Query(None)) -> Dict[str, Any]:
+def review_items_get(
+    entrainement_id: Optional[int] = Query(None, alias="entrainement_id"),
+    authorization: Optional[str] = Header(default=None),
+):
     """
-    Renvoie les Observations FAUX pour un Entrainement donné.
-    - Query: ?entrainement_id=123
-    - Si aucun id fourni, prend le dernier entraînement existant (fallback).
+    Retourne les Observations d'un entraînement (lecture).
+    Tolère l'absence de query si jamais il arrive vide -> 422 explicite.
     """
-    # 1) Choisir l'entrainement cible
-    eid = entrainement_id
-    if eid is None:
-        last = (
-            supabase.table("Entrainement")
-            .select("id")
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
+    if entrainement_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail=[{"loc": ["query", "entrainement_id"], "msg": "Field required", "type": "missing"}],
         )
-        data = getattr(last, "data", []) or []
-        if not data:
-            return {"entrainement_id": None, "count": 0, "items": []}
-        eid = int(data[0]["id"])
 
-    # 2) Récupérer les FAUX de cet entrainement
-    res = (
-        supabase.table("Observations")
-        .select("id, Parcours_Id, Operation, Operateur_Un, Operateur_Deux, Solution")
-        .eq("Entrainement_Id", eid)
-        .eq("Etat", "FAUX")
+    sb = user_scoped_client(authorization)
+    q = (
+        sb.table("Observations")
+        .select(
+            "id, Entrainement_Id, Parcours_Id, Operateur_Un, Operateur_Deux, "
+            "Operation, Proposition, Correction, Temps_Seconds, Score"
+        )
+        .eq("Entrainement_Id", entrainement_id)
         .order("id", desc=True)
+        .limit(1000)
         .execute()
     )
-    items: List[Dict[str, Any]] = getattr(res, "data", []) or []
+    items: List[Dict] = getattr(q, "data", []) or []
+    return {"items": items, "entrainement_id": entrainement_id}
 
-    return {"entrainement_id": eid, "count": len(items), "items": items}
+
+@router.post("/review/items")
+def review_items_post(
+    entrainement_id: Optional[int] = Query(None, alias="entrainement_id"),
+    body: Optional[dict] = Body(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    Même chose que GET mais accepte aussi l'ID dans le body:
+    { "entrainement_id": 123 }  (backward/forward compatible avec l'app)
+    """
+    # 1) récupérer l'id depuis body si pas en query
+    if entrainement_id is None and isinstance(body, dict):
+        # tolérer différentes clés potentiellement utilisées côté app
+        for k in ("entrainement_id", "Entrainement_Id", "training_id", "id"):
+            if body.get(k) is not None:
+                try:
+                    entrainement_id = int(body[k])
+                    break
+                except Exception:
+                    pass
+
+    if entrainement_id is None:
+        # on renvoie la même forme d'erreur que Pydantic pour cohérence UI
+        raise HTTPException(
+            status_code=422,
+            detail=[{"loc": ["query", "entrainement_id"], "msg": "Field required", "type": "missing"}],
+        )
+
+    sb = user_scoped_client(authorization)
+    q = (
+        sb.table("Observations")
+        .select(
+            "id, Entrainement_Id, Parcours_Id, Operateur_Un, Operateur_Deux, "
+            "Operation, Proposition, Correction, Temps_Seconds, Score"
+        )
+        .eq("Entrainement_Id", entrainement_id)
+        .order("id", desc=True)
+        .limit(1000)
+        .execute()
+    )
+    items: List[Dict] = getattr(q, "data", []) or []
+    return {"items": items, "entrainement_id": entrainement_id}
+
+
 # -----------------------------------------------------------------------------
 # (Optionnel) Compat : anciens endpoints de correction -> 410 Gone
 # -----------------------------------------------------------------------------

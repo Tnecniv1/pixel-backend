@@ -1,7 +1,7 @@
 # app/routers/parcours.py
 from fastapi import APIRouter, HTTPException, Query, Header
 from typing import Optional, Dict, Any, Literal, List
-from ..deps import supabase
+from ..deps import supabase, user_scoped_client
 from jose import jwt
 import logging
 from datetime import date, timezone

@@ -697,19 +697,16 @@ def review_mark_training(body: dict = Body(...)):
 
 
 @router.get("/review/items")
-def review_items_get(
+def get_review_items(
     entrainement_id: Optional[int] = Query(None, alias="entrainement_id"),
     authorization: Optional[str] = Header(default=None),
 ):
     """
-    Retourne les Observations d'un entraînement (lecture).
-    Tolère l'absence de query si jamais il arrive vide -> 422 explicite.
+    Récupère les items de review pour un entraînement.
+    Tolère l'absence d'ID (renvoie items vides) afin d'éviter un 422 côté app.
     """
     if entrainement_id is None:
-        raise HTTPException(
-            status_code=422,
-            detail=[{"loc": ["query", "entrainement_id"], "msg": "Field required", "type": "missing"}],
-        )
+        return {"items": [], "entrainement_id": None}
 
     sb = user_scoped_client(authorization)
     q = (

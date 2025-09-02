@@ -463,20 +463,26 @@ def score_timeseries(
     parcours_id: int | None = Query(None, description="Si fourni, on infère l'utilisateur via Suivi_Parcours"),
     step: int = Query(100, ge=1, description="taille d'une fenêtre (obs/point)"),
     windows: int = Query(10, ge=1, le=50, description="nombre de points"),
-    authorization: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),  # client lié au JWT (RLS)
 ):
+    """
+    Evolution du score CUMULÉ (toutes opérations), par tranches de `step` obs,
+    et retour des `windows` DERNIERS points, au format:
+      { "points": [{"x": <index absolu de bloc>, "y": <cumul global>}], "step": step, "windows": windows }
+    """
     sb = user_scoped_client(authorization)
 
+    # --- 1) Résoudre l'utilisateur ---
     uid = user_id
     if uid is None and parcours_id is not None:
         try:
             r = (
                 sb.table("Suivi_Parcours")
-                .select("Users_Id")
-                .eq("Parcours_Id", parcours_id)
-                .order("id", desc=True)
-                .limit(1)
-                .execute()
+                  .select("Users_Id")
+                  .eq("Parcours_Id", parcours_id)
+                  .order("id", desc=True)
+                  .limit(1)
+                  .execute()
             )
             row = (getattr(r, "data", []) or [None])[0]
             if row and row.get("Users_Id") is not None:
@@ -487,61 +493,14 @@ def score_timeseries(
     if uid is None:
         return {"points": [], "step": step, "windows": windows, "reason": "no_user"}
 
+    # --- 2) ✅ Appel RPC : cumul GLOBAL (depuis l'origine), et on ne renvoie que les 10 (windows) derniers blocs ---
     try:
-        r_e = (
-            sb.table("Entrainement")
-            .select("id")
-            .eq("Users_Id", uid)
-            .order("id", desc=True)
-            .limit(5000)
-            .execute()
-        )
-        eids_desc = [int(x["id"]) for x in (getattr(r_e, "data", []) or []) if x.get("id") is not None]
-        if not eids_desc:
-            return {"points": [], "step": step, "windows": windows, "reason": "no_trainings"}
+        rpc = sb.rpc("score_timeseries_global", {"uid": uid, "step": step, "windows": windows}).execute()
+        rows = getattr(rpc, "data", []) or []
+        # rows ~ [{ "x": 101, "y": 234 }, ...]  (x = index absolu du bloc, y = cumul global à la fin du bloc)
+        points = [{"x": int(r.get("x", 0)), "y": int(r.get("y", 0))} for r in rows]
+        return {"points": points, "step": step, "windows": windows}
     except Exception as e:
-        print("[score_timeseries] fetch Entrainement error:", e)
-        return {"points": [], "step": step, "windows": windows, "reason": "err_trainings"}
+        print("[score_timeseries] rpc error:", e)
+        return {"points": [], "step": step, "windows": windows, "reason": "rpc_error"}
 
-    target = step * windows
-    try:
-        r_obs = (
-            sb.table("Observations")
-            .select("id,Score,Entrainement_Id")
-            .in_("Entrainement_Id", eids_desc)
-            .order("id", desc=True)
-            .limit(target)
-            .execute()
-        )
-        obs_desc = getattr(r_obs, "data", []) or []
-    except Exception as e:
-        print("[score_timeseries] fetch Observations error:", e)
-        return {"points": [], "step": step, "windows": windows, "reason": "err_obs"}
-
-    if len(obs_desc) < step:
-        return {"points": [], "step": step, "windows": windows, "reason": "not_enough_obs", "count": len(obs_desc)}
-
-    obs = list(reversed(obs_desc))
-
-    points = []
-    cumul = 0
-    in_bucket = 0
-    idx = 0
-
-    for row in obs:
-        s = row.get("Score")
-        try:
-            s = int(s) if s is not None else 0
-        except Exception:
-            s = 0
-        cumul += s
-        in_bucket += 1
-
-        if in_bucket == step:
-            idx += 1
-            points.append({"x": idx, "y": cumul})
-            in_bucket = 0
-            if idx >= windows:
-                break
-
-    return {"points": points, "step": step, "windows": windows}

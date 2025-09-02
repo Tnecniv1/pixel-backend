@@ -191,9 +191,8 @@ def _last_suivi_by_type(sb, users_id: int) -> Dict[str, Dict[str, Any]]:
 def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
     """
     Score TOTAL = somme de Observations.Score pour *tous* les Entrainement du user.
-    Hypothèse: Observations.Score est +/-1 (ou numérique).
+    Ajout de logs pour comprendre ce qui est compté.
     """
-    # 1) ids d'entraînements (table au singulier)
     try:
         res_e = (
             sb.table("Entrainement")
@@ -205,6 +204,7 @@ def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
         eids: List[int] = [
             int(r["id"]) for r in (getattr(res_e, "data", []) or []) if r.get("id") is not None
         ]
+        print(f"[DEBUG] Entrainement IDs for user {users_id}: {eids}")
     except Exception as e:
         print("[users.score_total] fetch Entrainement error:", e)
         eids = []
@@ -212,7 +212,6 @@ def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
     if not eids:
         return 0
 
-    # 2) somme des scores (batch IN)
     total = 0
     BATCH = 1000
     for i in range(0, len(eids), BATCH):
@@ -220,12 +219,14 @@ def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
         try:
             res_o = (
                 sb.table("Observations")
-                .select("Score")
+                .select("id,Score,Entrainement_Id")  # log plus complet
                 .in_("Entrainement_Id", chunk)
                 .limit(200000)
                 .execute()
             )
             rows = getattr(res_o, "data", []) or []
+            obs_ids = [r.get("id") for r in rows if r.get("id") is not None]
+            print(f"[DEBUG] Observations for Entrainement chunk {chunk}: {obs_ids[:20]} ... total {len(obs_ids)}")
         except Exception as e:
             print("[users.score_total] fetch Observations error:", e)
             rows = []
@@ -239,7 +240,9 @@ def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
             except Exception:
                 pass
 
+    print(f"[DEBUG] Final total for user {users_id}: {total}")
     return int(total)
+
 
 # -------------------------------------------------------------------
 # GET /parcours/position : une seule opération

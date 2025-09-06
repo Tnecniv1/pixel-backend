@@ -27,10 +27,10 @@ import { Audio } from "expo-av";
 
 // 🎨 Personnalisation
 const COLORS = {
-  keyBg: "#994aaf",
-  keyText: "#FFFFFF",
-  displayText: "#7C3AED",
-  displayBorder: "#994aaf",
+  keyBg: "#6a5acd",
+  keyText: "#f8f8ff",
+  displayText: "#fefdffff",
+  displayBorder: "#7aa1f5ff",
 };
 const UI = {
   cols: 3,
@@ -257,8 +257,8 @@ export default function Calculator({
     }
 
     // Sinon, on peut tirer un nouveau piège pour la prochaine opération.
-    const h = Math.random() < (hideChance ?? 0.25);
-    const s = Math.random() < (shuffleChance ?? 0.25);
+    const h = Math.random() < (hideChance ?? 0.05);
+    const s = Math.random() < (shuffleChance ?? 0.10);
 
     if (!h && !s) {
       pendingModeRef.current = null;
@@ -419,3 +419,4 @@ const styles = StyleSheet.create({
     color: COLORS.keyText,
   },
 });
+

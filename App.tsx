@@ -1,21 +1,61 @@
 import "react-native-url-polyfill/auto";
 import "react-native-get-random-values";
+import React, { useEffect } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+
 import HomeScreen from "./src/screens/HomeScreen";
-import EntrainementScreen from "./src/screens/EntrainementScreen"; 
+import EntrainementScreen from "./src/screens/EntrainementScreen";
 import TrainScreen from "./src/screens/TrainScreen";
 import ResultScreen from "./src/screens/ResultScreen";
 import ReviewScreen from "./src/screens/ReviewScreen";
 import AuthScreen from "./src/screens/AuthScreen";
 import ProgressionScreen from "./src/screens/ProgressionScreen";
-import { AuthProvider, useAuth } from "./src/auth";
 import LeaderboardScreen from "./src/screens/LeaderboardScreen";
-import Purchases from 'react-native-purchases';
+import InfoScreen from "./src/screens/InfoScreen";
+import SignUpScreen from "./src/screens/SignUpScreen";
+import PaywallScreen from "./src/screens/PaywallScreen"; 
 
-/* ------------------------- Types partagés ------------------------- */
+import { AuthProvider, useAuth } from "./src/auth";
 
+import Purchases from "react-native-purchases";
+import Constants from "expo-constants";
 
+/* --------------------------- RevenueCat (désactivé par défaut) --------------------------- */
+async function initRevenueCat(userId?: string) {
+  try {
+    const extra: any = Constants?.expoConfig?.extra ?? {};
+
+    // Feature flag: n’active RC que si RC_ENABLED=true (env ou app.json.extra)
+    const enabledEnv = `${process.env.EXPO_PUBLIC_RC_ENABLED ?? ""}`.toLowerCase();
+    const enabled =
+      extra?.RC_ENABLED === true ||
+      enabledEnv === "true" ||
+      enabledEnv === "1";
+
+    if (!enabled) {
+      console.log("[RC] Désactivé → skip init");
+      return;
+    }
+
+    const apiKey =
+      process.env.EXPO_PUBLIC_RC_API_KEY ??
+      extra?.EXPO_PUBLIC_RC_API_KEY ??
+      extra?.RC_API_KEY;
+
+    if (!apiKey) {
+      console.warn("[RC] ⚠️ Pas de clé RC → skip init");
+      return;
+    }
+
+    await Purchases.configure({ apiKey, appUserID: userId ?? null });
+    console.log("[RC] ✅ Configuré", userId ? `(user=${userId})` : "(anonyme)");
+  } catch (e) {
+    console.error("[RC] ❌ Erreur init:", e);
+  }
+}
+
+/* ------------------------- Types de navigation ------------------------- */
 export type ReviewItem = {
   operation: string;
   expected: number;
@@ -26,9 +66,11 @@ export type ReviewItem = {
 
 export type RootStackParamList = {
   Auth: undefined;
-  Home: undefined;                 // Accueil (2 CTA : Entrainement / Progression)
-  Entrainement: undefined;         // 👈 Pré-session (niveaux + choix volume)
-  Train: { volume: number };       // Session en cours (uniquement volume)
+  SignUp: undefined;
+  Home: undefined;
+  Paywall: undefined;
+  Entrainement: undefined;
+  Train: { volume: number };
   Result: {
     entrainementId: number;
     parcoursId?: number;
@@ -42,21 +84,27 @@ export type RootStackParamList = {
     mistakes: ReviewItem[];
     mode?: "mixte" | "mono";
   };
-  Progression: { parcoursId: number }; // Carrousel d’analyse
-  Leaderboard: undefined; // 👈 ajoute ceci
+  Progression: { parcoursId: number };
+  Leaderboard: undefined;
+  Info: undefined;
+
+
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
-
-const RC_API_KEY = process.env.EXPO_PUBLIC_RC_API_KEY!;
 
 /* --------------------------- Router --------------------------- */
 function Router() {
   const { authUid, loading } = useAuth();
 
-  if (loading) return null; // (option) afficher un splash ici
+  useEffect(() => {
+    // Init RevenueCat (feature-flag)
+    if (authUid) initRevenueCat(authUid);
+    else initRevenueCat();
+  }, [authUid]);
 
-  // Non connecté → stack d'auth uniquement
+  if (loading) return null;
+
   if (!authUid) {
     return (
       <Stack.Navigator>
@@ -65,11 +113,15 @@ function Router() {
           component={AuthScreen}
           options={{ headerShown: false }}
         />
+        <Stack.Screen
+          name="SignUp"
+          component={SignUpScreen}
+          options={{ title: "Créer un compte" }}
+        />
       </Stack.Navigator>
     );
   }
 
-  // Connecté → stack principale
   return (
     <Stack.Navigator initialRouteName="Home" screenOptions={{ headerShown: true }}>
       <Stack.Screen
@@ -77,6 +129,11 @@ function Router() {
         component={HomeScreen}
         options={{ title: "Pixel - Calcul Mental" }}
       />
+      <Stack.Screen
+        name="Paywall"
+        component={PaywallScreen}
+        options={{ title: "Abonnement"}}
+        />
       <Stack.Screen
         name="Entrainement"
         component={EntrainementScreen}
@@ -97,17 +154,20 @@ function Router() {
         component={ReviewScreen}
         options={{ title: "Correction" }}
       />
-
-      <Stack.Screen 
-        name="Leaderboard" 
-        component={LeaderboardScreen} 
+      <Stack.Screen
+        name="Leaderboard"
+        component={LeaderboardScreen}
         options={{ title: "Classement" }}
-        />
-
+      />
       <Stack.Screen
         name="Progression"
         component={ProgressionScreen}
         options={{ title: "Progression" }}
+      />
+      <Stack.Screen
+        name="Info"
+        component={InfoScreen}
+        options={{ title: "Informations" }}
       />
     </Stack.Navigator>
   );
@@ -115,20 +175,6 @@ function Router() {
 
 /* --------------------------- App --------------------------- */
 export default function App() {
-  useEffect(() => {
-    (async () => {
-      // Configure RevenueCat avec ta clé publique
-      await Purchases.configure({ apiKey: RC_API_KEY });
-
-      // Connecte l'abonnement à ton utilisateur supabase
-      const { data } = await supabase.auth.getUser();
-      const authUid = data?.user?.id;
-      if (authUid) {
-        await Purchases.logIn(authUid);
-      }
-    })();
-  }, []);
-  
   return (
     <AuthProvider>
       <NavigationContainer>
@@ -137,4 +183,5 @@ export default function App() {
     </AuthProvider>
   );
 }
+
 

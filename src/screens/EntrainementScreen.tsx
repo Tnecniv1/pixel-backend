@@ -11,41 +11,86 @@ import {
 } from "react-native";
 import { AntDesign } from "@expo/vector-icons";
 import Constants from "expo-constants";
+import Purchases from "react-native-purchases";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { supabase } from "../supabase";
 import { theme } from "../theme";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../../App";
+import { fetchWithSupabaseAuth } from "../api";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Train">;
 
 type Position = {
   niveau: number;
   parcours_id: number;
-  taux?: number;             // 0..1
-  type_evolution?: string;   // "progression" | "régression" | "stagnation"
+  taux?: number;
+  type_evolution?: string;
   date?: string;
-  critere?: number;          // ex. 20
-  restantes?: number;        // obs restantes avant prochain test critique
+  critere?: number;
+  restantes?: number;
 };
 
 type Positions = {
   Addition?: Position | null;
   Soustraction?: Position | null;
   Multiplication?: Position | null;
-  score_points?: number | null; // somme des points (Observations.Score)
-  score_global?: number | null; // 0..1 si tu veux encore t’en servir ailleurs
+  score_points?: number | null;
+  score_global?: number | null;
 };
 
 const API_BASE: string =
-  // @ts-ignore Expo SDK 50+
+  // Expo SDK 50+
   (Constants?.expoConfig?.extra?.API_BASE_URL as string) ||
-  // @ts-ignore Expo SDK < 50
-  (Constants?.manifest?.extra?.API_BASE_URL as string) ||
-  "http://192.168.1.16:8000";
+  // Expo SDK < 50
+  (Constants as any)?.manifest?.extra?.API_BASE_URL ||
+  "";
 
-/* =========================================================================
-   ÉCRAN
-   ========================================================================= */
+/* ===================== Paywall guard (HARD mode) ===================== */
+const TRIAL_DAYS = 3;
+const TRIAL_KEY = "pixel_trial_started_at";
+
+/** Vrai si l’utilisateur a au moins un entitlement actif dans RC. */
+async function hasActiveEntitlement(): Promise<boolean> {
+  try {
+    const info = await Purchases.getCustomerInfo();
+    const active = info?.entitlements?.active ?? {};
+    return Object.keys(active).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Vrai si l’essai local (3 jours) est encore en cours. */
+async function isInLocalTrial(): Promise<boolean> {
+  const now = Date.now();
+  const stored = await AsyncStorage.getItem(TRIAL_KEY);
+
+  // 1er passage : on démarre l’essai
+  if (!stored) {
+    await AsyncStorage.setItem(TRIAL_KEY, String(now));
+    return true;
+  }
+
+  const startedAt = Number(stored);
+  if (!Number.isFinite(startedAt)) {
+    await AsyncStorage.setItem(TRIAL_KEY, String(now));
+    return true;
+  }
+
+  const days = Math.floor((now - startedAt) / (24 * 60 * 60 * 1000));
+  return days < TRIAL_DAYS;
+}
+
+/** Autorise à jouer si abonnement actif OU essai local non expiré. */
+async function canStartTraining(): Promise<boolean> {
+  if (await hasActiveEntitlement()) return true;
+  return await isInLocalTrial();
+}
+
+/* ===================================================================== */
+
 export default function EntrainementScreen({ navigation }: Props) {
   const [positions, setPositions] = useState<Positions | null>(null);
   const [loading, setLoading] = useState(false);
@@ -59,19 +104,21 @@ export default function EntrainementScreen({ navigation }: Props) {
         const { data: sessionData } = await supabase.auth.getSession();
         const token = sessionData?.session?.access_token;
 
-        // ⚠️ si besoin, rends le parcoursId dynamique
+        // NOTE: parcours_id=1 — garde ta logique actuelle
         const url = `${API_BASE}/parcours/positions_currentes?parcours_id=1`;
 
-        const res = await fetch(url, {
+        const res = await fetchWithSupabaseAuth(url, {
           headers: {
             "Content-Type": "application/json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
         });
+
         if (!res.ok) {
           const txt = await res.text();
           throw new Error(`HTTP ${res.status} ${txt}`);
         }
+
         const data = (await res.json()) as Positions;
         if (alive) setPositions(data);
       } catch (e: any) {
@@ -85,15 +132,28 @@ export default function EntrainementScreen({ navigation }: Props) {
     };
   }, []);
 
+  // Lorsque l’utilisateur tape sur “CALCULEZ !”
+  const onStartPress = async () => {
+    try {
+      const allowed = await canStartTraining();
+      if (allowed) {
+        navigation.navigate("Train", { volume });
+      } else {
+        // Redirige vers ton écran d’info/paywall existant
+        navigation.navigate("Info");
+      }
+    } catch (e: any) {
+      Alert.alert("Oups", e?.message ?? "Action impossible pour le moment.");
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.container}>
         <Text style={styles.title}>Préparer l’entraînement</Text>
 
-        {/* === Tableau style maquette === */}
         <PositionsTable positions={positions} loading={loading} />
 
-        {/* === Sélecteur volume === */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Nombre d’opérations</Text>
           <View style={styles.volRow}>
@@ -103,12 +163,7 @@ export default function EntrainementScreen({ navigation }: Props) {
           </View>
         </View>
 
-        {/* === CTA === */}
-        <TouchableOpacity
-          activeOpacity={0.9}
-          style={styles.cta}
-          onPress={() => navigation.navigate("Train", { volume })}
-        >
+        <TouchableOpacity activeOpacity={0.9} style={styles.cta} onPress={onStartPress}>
           <Text style={styles.ctaText}>CALCULEZ !</Text>
         </TouchableOpacity>
       </View>
@@ -116,9 +171,7 @@ export default function EntrainementScreen({ navigation }: Props) {
   );
 }
 
-/* =========================================================================
-   COMPOSANTS
-   ========================================================================= */
+/* ===================== Sous-composants ===================== */
 
 function PositionsTable({
   positions,
@@ -127,11 +180,9 @@ function PositionsTable({
   positions: Positions | null;
   loading: boolean;
 }) {
-  // score en points (entier)
   const scorePoints =
     typeof positions?.score_points === "number" ? positions!.score_points! : null;
 
-  // flèche globale (si au moins une progression -> up ; sinon régression -> down ; sinon flat)
   const evolutions = [
     positions?.Addition?.type_evolution,
     positions?.Soustraction?.type_evolution,
@@ -146,7 +197,6 @@ function PositionsTable({
 
   return (
     <View style={styles.tableCard}>
-      {/* Header */}
       <View style={styles.tableHeaderRow}>
         <Text style={[styles.th, styles.thLeft]}>OPÉRATIONS</Text>
         <Text style={styles.th}>NIVEAU</Text>
@@ -159,16 +209,14 @@ function PositionsTable({
         </View>
       ) : (
         <View style={styles.tableBodyRow}>
-          {/* Bloc gauche : Opérations + Niveau (3 lignes) */}
           <View style={styles.leftBlock}>
-            <TableLine op="Addition"       pos={positions?.Addition} />
+            <TableLine op="Addition" pos={positions?.Addition} />
             <View style={styles.rowDivider} />
-            <TableLine op="Soustraction"   pos={positions?.Soustraction} />
+            <TableLine op="Soustraction" pos={positions?.Soustraction} />
             <View style={styles.rowDivider} />
             <TableLine op="Multiplication" pos={positions?.Multiplication} />
           </View>
 
-          {/* Bloc droit : SCORE global (points) + flèche */}
           <View style={styles.rightBlock}>
             <View style={[styles.scorePanel, { paddingHorizontal: 14, minWidth: 110 }]}>
               <Text style={[styles.scoreBig, { marginRight: 0 }]}>
@@ -196,16 +244,15 @@ function PositionsTable({
   );
 }
 
-
 function TableLine({ op, pos }: { op: string; pos?: Position | null }) {
   return (
     <View style={styles.bodyRow}>
-      {/* Colonne gauche : nom de l’opération */}
       <View style={styles.cellLeft}>
-        <Text style={styles.opLabel} numberOfLines={1}>{op}</Text>
+        <Text style={styles.opLabel} numberOfLines={1}>
+          {op}
+        </Text>
       </View>
 
-      {/* Colonne milieu : Niveau + N-restantes */}
       <View style={styles.cellMid}>
         <Text style={styles.levelCell}>Niv {pos?.niveau ?? "--"}</Text>
         {typeof pos?.restantes === "number" && (
@@ -243,14 +290,10 @@ function VolPill({
   );
 }
 
-/* =========================================================================
-   STYLES
-   ========================================================================= */
-
-
+/* ===================== Styles ===================== */
 
 const COLORS = {
-  bg: theme?.colors?.bg ?? "#0E1420", // fond sombre actuel
+  bg: theme?.colors?.bg ?? "#0E1420",
   text: theme?.colors?.text ?? "#F5F7FB",
   subtext: theme?.colors?.subtext ?? "#9CA3AF",
   card: "#FFFFFF",
@@ -274,7 +317,6 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: COLORS.blueDark, fontWeight: "800", marginBottom: 10, fontSize: 16 },
 
-  // --- Tableau (maquette)
   tableCard: {
     backgroundColor: COLORS.card,
     borderRadius: 14,
@@ -299,20 +341,9 @@ const styles = StyleSheet.create({
   thLeft: { flex: 1.4, textAlign: "left", paddingLeft: 14 },
   thRight: { textAlign: "center" },
 
-  tableBodyRow: {
-    flexDirection: "row",
-  },
-  leftBlock: {
-    flex: 1.8,
-    borderRightWidth: 2,
-    borderColor: COLORS.blueDark,
-  },
-  rightBlock: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "space-evenly",
-    paddingVertical: 12,
-  },
+  tableBodyRow: { flexDirection: "row" },
+  leftBlock: { flex: 1.8, borderRightWidth: 2, borderColor: COLORS.blueDark },
+  rightBlock: { flex: 1, alignItems: "center", justifyContent: "space-evenly", paddingVertical: 12 },
 
   bodyRow: {
     flexDirection: "row",
@@ -320,10 +351,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
-  rowDivider: {
-    height: 1.5,
-    backgroundColor: "#D1D5DB",
-  },
+  rowDivider: { height: 1.5, backgroundColor: "#D1D5DB" },
 
   cellLeft: { flex: 1.2, justifyContent: "center" },
   cellMid: {
@@ -352,34 +380,14 @@ const styles = StyleSheet.create({
   },
   scoreBig: { fontSize: 22, fontWeight: "900", color: COLORS.blueDark },
 
-    subLevelCell: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: COLORS.subtext,
-    marginTop: 2,
-  },
+  subLevelCell: { fontSize: 11, fontWeight: "600", color: COLORS.subtext, marginTop: 2 },
 
-  trendBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  trendBadge: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
 
-  // Volumes
   volRow: { flexDirection: "row", justifyContent: "space-between", gap: 10, marginTop: 8 },
-  volPill: {
-    flex: 1,
-    height: 40,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-  },
+  volPill: { flex: 1, height: 40, borderRadius: 999, alignItems: "center", justifyContent: "center", borderWidth: 2 },
   volText: { fontWeight: "800", fontSize: 16 },
 
-  // CTA
   cta: {
     height: 50,
     borderRadius: 999,
@@ -390,4 +398,3 @@ const styles = StyleSheet.create({
   },
   ctaText: { color: "#171717", fontWeight: "900", fontSize: 16, letterSpacing: 0.2 },
 });
-

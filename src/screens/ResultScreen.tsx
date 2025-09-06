@@ -372,10 +372,10 @@ export default function ResultScreen({ route, navigation }: Props) {
 const COLORS = {
   bg: theme.colors.bg ?? "#F8F4F1",
   card: "#EDEDED",
-  pillPurple: "#D36AD6",
-  pillPurpleDark: "#C357C6",
+  pillPurple: "#812171ff",
+  pillPurpleDark: "#fff5ffff",
   white: "#FFFFFF",
-  grayText: "#4C4C4C",
+  grayText: "#000000ff",
   blueTitle: "#1F3554",
   greenText: "#37B26C",
   orangeValue: "#F5A300",

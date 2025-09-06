@@ -9,9 +9,7 @@ const expoExtra: any = Constants.expoConfig?.extra ?? Constants.manifest?.extra 
 const SUPABASE_URL = expoExtra.SUPABASE_URL;
 const SUPABASE_ANON_KEY = expoExtra.SUPABASE_ANON_KEY;
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, storage: AsyncStorage as any },
-});
+
 
 type AuthCtx = {
   loading: boolean;
@@ -79,3 +77,12 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>");
   return ctx;
 }
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+    storage: AsyncStorage as any,
+  },
+});

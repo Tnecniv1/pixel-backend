@@ -68,7 +68,11 @@ export default function AuthScreen({ navigation }: any) {
       />
 
       <Button title={submitting ? "Connexion…" : "Se connecter"} onPress={onLogin} disabled={submitting} />
-      <Button title="Créer un compte" onPress={onSignup} disabled={submitting} />
+      <Button
+        title="Créer un compte"
+        onPress={() => navigation.navigate("SignUp")}
+        disabled={submitting}
+      />
     </View>
   );
 }

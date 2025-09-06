@@ -1,4 +1,3 @@
-// src/screens/HomeScreen.tsx
 import * as React from "react";
 import { SafeAreaView, View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -6,12 +5,12 @@ import type { RootStackParamList } from "../../App";
 import BigPixel from "../components/BigPixel";
 import { getPixelState } from "../api";
 import SignOutButton from "../components/SignOutButton";
-import { useLayoutEffect } from "react"; // NEW
+import { useLayoutEffect } from "react";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
 const COLORS = {
-  bg: "#F8F4F1",
+  bg: "#f2f1f8ff",
   text: "#1F3554",
   subtext: "#6B7280",
   orange: "#FFB25E",
@@ -25,7 +24,23 @@ const COLORS = {
 export default function HomeScreen({ navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: () => <SignOutButton />, 
+      headerLeft: () => <SignOutButton />,
+      headerRight: () => (
+        <TouchableOpacity 
+          onPress={() => navigation.navigate("Info")}
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 16,
+            backgroundColor: "#E0E0E0", // même fond que le "D"
+            justifyContent: "center",
+            alignItems: "center",
+            marginRight: 10,
+          }}
+        >
+          <Text style={{ fontWeight: "600", color: "#000" }}>i</Text>
+        </TouchableOpacity>
+      ),
     });
   }, [navigation]);
 
@@ -56,12 +71,6 @@ export default function HomeScreen({ navigation }: Props) {
           <Text style={styles.title}>SUCCES OU ECHEC ?</Text>
           <Text style={styles.subtitle}>Il s'agit de ne jamais abandonner</Text>
         </View>
-
-        {/* REMOVE: on n'affiche plus le bouton dans le layout
-        <View style={{ flex: 1 }}>
-          <SignOutButton />
-        </View>
-        */}
 
         {/* Grand Pixel */}
         <View style={styles.pixelBlock}>

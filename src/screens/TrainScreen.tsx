@@ -193,9 +193,9 @@ export default function TrainScreen({ route, navigation }: Props) {
         destabilizeEnabled={true}
 
         // (tes réglages)
-        hideChance={0.20}
-        hideRange={{ min: 1, max: 2 }}
-        shuffleChance={0.33}
+        hideChance={0.05}
+        hideRange={{ min: 1, max: 5 }}
+        shuffleChance={0.1}
         shuffleRange={{ min: 1, max: 3 }}
       />
 

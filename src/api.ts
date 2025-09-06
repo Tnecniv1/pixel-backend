@@ -1,7 +1,7 @@
 // src/api.ts
 import axios from "axios";
-import { supabase } from "./supabase";
 import { API_BASE as API_URL } from "./config";
+import { supabase } from "./auth";
 
 /* ========== Axios ========== */
 const api = axios.create({
@@ -73,6 +73,54 @@ export type PositionsResponse = {
 };
 
 /* ========== Endpoints: training/exercises ========== */
+
+
+export async function fetchWithSupabaseAuth(input: RequestInfo, init: RequestInit = {}) {
+  // 1) Récupère/rafraîchit la session
+  let accessToken: string | null = null;
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    accessToken = data.session?.access_token ?? null;
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    // Cas fréquent: refresh token révoqué/absent -> on force un signOut propre
+    if (msg.includes("Invalid Refresh Token")) {
+      console.warn("[auth] refresh token invalide -> signOut()");
+      try { await supabase.auth.signOut(); } catch {}
+      // on nettoie la clé d’essai local au passage si tu l’utilises
+      try { await AsyncStorage.removeItem("pixel_trial_started_at"); } catch {}
+      // On propage une erreur lisible (ton UI peut alors rediriger vers Auth)
+      throw new Error("SESSION_EXPIRED");
+    }
+    throw e;
+  }
+
+  // 2) Construit la requête avec le Bearer si présent
+  const headers = new Headers(init.headers as any);
+  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+
+  const resp = await fetch(input, { ...init, headers });
+
+  // 3) Si le backend répond 401/403 (JWT expiré côté serveur), on resynchronise de la même façon
+  if (resp.status === 401 || resp.status === 403) {
+    try { await supabase.auth.signOut(); } catch {}
+    try { await AsyncStorage.removeItem("pixel_trial_started_at"); } catch {}
+    throw new Error("SESSION_EXPIRED");
+  }
+
+  return resp;
+}
+
+
+
+
+
+
+
+
+
+
 export async function startSession(
   typeOperation: "Addition" | "Soustraction" | "Multiplication",
   volume: number
@@ -189,8 +237,6 @@ export async function getPositions(baseUrl: string, entrainementId: number, toke
   }
   return json!;
 }
-
-
 
 export async function getPixelState(): Promise<PixelState> {
   try {

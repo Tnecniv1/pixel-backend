@@ -1,4 +1,3 @@
-// src/screens/ProgressionScreen.tsx
 import React, { useEffect, useState } from "react";
 import {
   SafeAreaView,
@@ -13,6 +12,7 @@ import Constants from "expo-constants";
 import { supabase } from "../supabase";
 import { theme } from "../theme";
 import Svg, { Line as SvgLine, Path as SvgPath, Rect, Text as SvgText } from "react-native-svg";
+import { fetchWithSupabaseAuth } from "../api"; // chemin exact à vérifier
 
 
 /* ========================== Types ========================== */
@@ -216,7 +216,7 @@ async function fetchScoreTimeseries(): Promise<ScoreSeries | null> {
 
     const url = `${API_BASE}/parcours/score_timeseries?parcours_id=1&step=100&windows=10`;
 
-    const res = await fetch(url, {
+    const res = await fetchWithSupabaseAuth(url, {
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -238,7 +238,7 @@ async function fetchDayStreakAPI(): Promise<{ current: number; max: number } | n
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
 
-    const res = await fetch(`${API_BASE}/stats/day_streak_current`, {
+    const res = await fetchWithSupabaseAuth(`${API_BASE}/stats/day_streak_current`, {
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -453,3 +453,4 @@ const styles = StyleSheet.create({
   currentValue: { fontSize: 40, fontWeight: "800", color: "#111827", letterSpacing: 0.5 },
   currentHint: { fontSize: 12, color: "#9CA3AF", marginTop: 2 },
 });
+

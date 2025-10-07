@@ -55,6 +55,13 @@ def reset_password_page():
         media_type="text/html"
     )
 
+@app.get("/email-confirmed")
+def email_confirmed_page():
+    return FileResponse(
+        os.path.join(os.path.dirname(__file__), "email-confirmed.html"),
+        media_type="text/html"
+    )
+
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,

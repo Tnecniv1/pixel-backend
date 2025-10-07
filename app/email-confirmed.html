@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>E-mail confirmé – Pixel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 520px; margin: 40px auto; padding: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
+    h2 { margin: 0 0 8px; }
+    p { color:#444 }
+    a.btn { display:inline-block; padding:10px 14px; border-radius:8px; background:#4c92f7; color:#fff; text-decoration:none; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>✅ E-mail confirmé</h2>
+    <p>Votre adresse a bien été vérifiée.</p>
+    <p>Vous pouvez maintenant ouvrir l’application et vous connecter avec vos identifiants.</p>
+
+    <!-- (optionnel) bouton deep-link pour renvoyer vers l’app si installée -->
+    <p style="margin-top:12px">
+      <a class="btn" href="pixelcalc://auth-callback">Ouvrir l’app</a>
+    </p>
+  </div>
+</body>
+</html>

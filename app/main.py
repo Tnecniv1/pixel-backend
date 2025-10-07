@@ -47,6 +47,10 @@ def health():
 def list_routes():
     return [getattr(r, "path", None) for r in app.router.routes]
 
+@app.get("/reset-password")
+def reset_password_page():
+    return FileResponse(os.path.join(os.path.dirname(__file__), "reset-password.html"))
+
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
@@ -65,11 +69,3 @@ app.include_router(classement.router)
 app.include_router(stats.router)
 
 
-
-
-
-app = FastAPI()
-
-@app.get("/reset-password")
-def reset_password_page():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "reset-password.html"))

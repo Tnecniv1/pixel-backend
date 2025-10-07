@@ -47,9 +47,13 @@ def health():
 def list_routes():
     return [getattr(r, "path", None) for r in app.router.routes]
 
+
 @app.get("/reset-password")
 def reset_password_page():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "reset-password.html"))
+    return FileResponse(
+        os.path.join(os.path.dirname(__file__), "reset-password.html"),
+        media_type="text/html"
+    )
 
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(

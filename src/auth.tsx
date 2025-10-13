@@ -1,36 +1,32 @@
 // src/auth.tsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import Constants from "expo-constants";
-import { createClient } from "@supabase/supabase-js";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { supabase } from "./supabase"; // ✅ Utiliser le client unique de supabase.ts
 
-// --- Supabase client (Expo, storage natif) ---
-const expoExtra: any = Constants.expoConfig?.extra ?? Constants.manifest?.extra ?? {};
-const SUPABASE_URL = expoExtra.SUPABASE_URL;
-const SUPABASE_ANON_KEY = expoExtra.SUPABASE_ANON_KEY;
-
-
+// Page de redirection après confirmation e-mail
+const EMAIL_CONFIRMED_URL = "https://pixel-calcul-mental.onrender.com/email-confirmed";
 
 type AuthCtx = {
   loading: boolean;
   authUid: string | null;
   email: string | null;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string, name?: string) => Promise<void>;
   signOut: () => Promise<void>;
+  getAccessToken: () => Promise<string>;
 };
 
 const Ctx = createContext<AuthCtx | null>(null);
+
+// ✅ On exporte aussi 'supabase' pour compatibilité avec le code existant
+export { supabase };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [authUid, setAuthUid] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
 
-  // Bootstrap + abonnement aux changements d’auth
   useEffect(() => {
     let mounted = true;
-
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (mounted) {
@@ -54,11 +50,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function signIn(email: string, password: string) {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-    // onAuthStateChange se chargera de mettre authUid/email à jour
   }
 
-  async function signUp(email: string, password: string) {
-    const { error } = await supabase.auth.signUp({ email, password });
+  async function signUp(email: string, password: string, name?: string) {
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        // on stocke le nom en métadonnées s'il est fourni
+        ...(name ? { data: { name } } : {}),
+        // URL de redirection après clic sur "Confirmer mon e-mail"
+        emailRedirectTo: EMAIL_CONFIRMED_URL,
+      },
+    });
     if (error) throw error;
   }
 
@@ -67,7 +71,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error) throw error;
   }
 
-  const value = useMemo(() => ({ loading, authUid, email, signIn, signUp, signOut }), [loading, authUid, email]);
+  async function getAccessToken(): Promise<string> {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    const token = data.session?.access_token;
+    if (!token) throw new Error("Session introuvable. Veuillez vous reconnecter.");
+    return token;
+  }
+
+  const value = useMemo(
+    () => ({ loading, authUid, email, signIn, signUp, signOut, getAccessToken }),
+    [loading, authUid, email]
+  );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -77,12 +92,3 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used inside <AuthProvider>");
   return ctx;
 }
-
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,
-    storage: AsyncStorage as any,
-  },
-});

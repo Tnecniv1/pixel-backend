@@ -8,28 +8,29 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
+    "jsEngine": "hermes",
+
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+
     "ios": {
       "bundleIdentifier": "com.vcent1.pixelmobile",
-      "buildNumber": "35",
-      "entitlements": {
-        "com.apple.developer.applesignin": [
-          "Default",
-          "Default"
-        ]
-      },
+      "buildNumber": "41",
       "supportsTablet": true,
+      "usesAppleSignIn": true,
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      },
-      "runtimeVersion": {
-        "policy": "appVersion"
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": ["pixelcalc"]
+          }
+        ]
       }
     },
+
     "android": {
       "package": "com.vcent1.pixelmobile",
       "versionCode": 6,
@@ -40,15 +41,14 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS"
-      ],
-      "runtimeVersion": "1.0.0"
+      ]
     },
+
     "web": {
       "favicon": "./assets/favicon.png"
     },
+
     "extra": {
       "RC_ENABLED": true,
       "RC_API_KEY": "appl_CPTNcSaaAgverwwrPplfqoTmfUw",
@@ -59,15 +59,20 @@
         "projectId": "a00bf31b-a0b9-402d-93e1-b3c27beb694d"
       }
     },
+
     "plugins": [
       "expo-audio",
       "expo-asset",
       "expo-web-browser",
       "expo-apple-authentication"
     ],
+
     "owner": "vcent.1",
+
     "updates": {
-      "url": "https://u.expo.dev/a00bf31b-a0b9-402d-93e1-b3c27beb694d"
+      "enabled": false
     }
   }
 }
+
+

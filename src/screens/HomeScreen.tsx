@@ -4,18 +4,17 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../../App";
 import BigPixel from "../components/BigPixel";
 import { getPixelState } from "../api";
-import SignOutButton from "../components/SignOutButton";
 import { useLayoutEffect } from "react";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
 
 const COLORS = {
-  bg: "#f2f1f8ff",
-  text: "#1F3554",
-  subtext: "#6B7280",
-  orange: "#FFB25E",
+  bg: "#18162A",
+  text: "#ffffffff",
+  subtext: "#9a9ca1ff",
+  orange: "#FFD93D",
   orangeText: "#171717",
-  blue: "#CBE0FF",
+  blue: "#4DB7FF",
   blueText: "#11283F",
   card: "#FFFFFF",
   shadow: "rgba(0,0,0,0.08)",
@@ -24,15 +23,14 @@ const COLORS = {
 export default function HomeScreen({ navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerLeft: () => <SignOutButton />,
       headerRight: () => (
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => navigation.navigate("Info")}
           style={{
             width: 32,
             height: 32,
             borderRadius: 16,
-            backgroundColor: "#E0E0E0", // même fond que le "D"
+            backgroundColor: "#b648c0ff",
             justifyContent: "center",
             alignItems: "center",
             marginRight: 10,
@@ -69,7 +67,7 @@ export default function HomeScreen({ navigation }: Props) {
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>SUCCES OU ECHEC ?</Text>
-          <Text style={styles.subtitle}>Il s'agit de ne jamais abandonner</Text>
+          <Text style={styles.subtitle}>Parviendras-tu à remplir ton pixel ?</Text>
         </View>
 
         {/* Grand Pixel */}

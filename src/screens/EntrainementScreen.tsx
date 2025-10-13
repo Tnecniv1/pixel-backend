@@ -19,8 +19,12 @@ import { theme } from "../theme";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../../App";
 import { fetchWithSupabaseAuth } from "../api";
+import { useRoute } from "@react-navigation/native";
+import type { RouteProp } from "@react-navigation/native";
 
-type Props = NativeStackScreenProps<RootStackParamList, "Train">;
+/** ---------- Types & route ---------- */
+type Props = NativeStackScreenProps<RootStackParamList, "Entrainement">;
+type EntrainementRoute = RouteProp<RootStackParamList, "Entrainement">;
 
 type Position = {
   niveau: number;
@@ -40,6 +44,7 @@ type Positions = {
   score_global?: number | null;
 };
 
+/** ---------- Config ---------- */
 const API_BASE: string =
   // Expo SDK 50+
   (Constants?.expoConfig?.extra?.API_BASE_URL as string) ||
@@ -47,11 +52,10 @@ const API_BASE: string =
   (Constants as any)?.manifest?.extra?.API_BASE_URL ||
   "";
 
-/* ===================== Paywall guard (HARD mode) ===================== */
 const TRIAL_DAYS = 3;
 const TRIAL_KEY = "pixel_trial_started_at";
 
-/** Vrai si l’utilisateur a au moins un entitlement actif dans RC. */
+/** ---------- Paywall guard ---------- */
 async function hasActiveEntitlement(): Promise<boolean> {
   try {
     const info = await Purchases.getCustomerInfo();
@@ -62,39 +66,50 @@ async function hasActiveEntitlement(): Promise<boolean> {
   }
 }
 
-/** Vrai si l’essai local (3 jours) est encore en cours. */
+/** Vrai si l’essai local (3 jours) est encore en cours. Normalise s→ms et réécrit en ms. */
 async function isInLocalTrial(): Promise<boolean> {
-  const now = Date.now();
-  const stored = await AsyncStorage.getItem(TRIAL_KEY);
+  const nowMs = Date.now();
+  const raw = await AsyncStorage.getItem(TRIAL_KEY);
 
-  // 1er passage : on démarre l’essai
-  if (!stored) {
-    await AsyncStorage.setItem(TRIAL_KEY, String(now));
+  if (!raw) {
+    await AsyncStorage.setItem(TRIAL_KEY, String(nowMs));
     return true;
   }
 
-  const startedAt = Number(stored);
-  if (!Number.isFinite(startedAt)) {
-    await AsyncStorage.setItem(TRIAL_KEY, String(now));
+  let started = Number(raw);
+  if (!Number.isFinite(started) || started <= 0) {
+    await AsyncStorage.setItem(TRIAL_KEY, String(nowMs));
     return true;
   }
 
-  const days = Math.floor((now - startedAt) / (24 * 60 * 60 * 1000));
+  // Normaliser l’unité : si ça ressemble à des secondes, convertir en ms
+  if (started < 1e12) {
+    started = started * 1000;
+    // Réécrire en ms pour stabiliser définitivement
+    await AsyncStorage.setItem(TRIAL_KEY, String(started));
+  }
+
+  const days = Math.floor((nowMs - started) / (24 * 60 * 60 * 1000));
   return days < TRIAL_DAYS;
 }
 
-/** Autorise à jouer si abonnement actif OU essai local non expiré. */
+/** Autorise à jouer si essai local actif OU abonnement actif. Essai prioritaire. */
 async function canStartTraining(): Promise<boolean> {
-  if (await hasActiveEntitlement()) return true;
-  return await isInLocalTrial();
+  if (await isInLocalTrial()) return true;
+  return await hasActiveEntitlement();
 }
 
-/* ===================================================================== */
-
+/** ---------- Screen ---------- */
 export default function EntrainementScreen({ navigation }: Props) {
+  const route = useRoute<EntrainementRoute>();
   const [positions, setPositions] = useState<Positions | null>(null);
   const [loading, setLoading] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [volume, setVolume] = useState<10 | 50 | 100>(10);
+
+  useEffect(() => {
+    console.log("[ROUTE] EntrainementScreen mounted as:", route.name); // doit afficher "Entrainement"
+  }, [route.name]);
 
   useEffect(() => {
     let alive = true;
@@ -104,7 +119,7 @@ export default function EntrainementScreen({ navigation }: Props) {
         const { data: sessionData } = await supabase.auth.getSession();
         const token = sessionData?.session?.access_token;
 
-        // NOTE: parcours_id=1 — garde ta logique actuelle
+        // NOTE: parcours_id=1 — garder la logique actuelle tant que nécessaire
         const url = `${API_BASE}/parcours/positions_currentes?parcours_id=1`;
 
         const res = await fetchWithSupabaseAuth(url, {
@@ -132,18 +147,28 @@ export default function EntrainementScreen({ navigation }: Props) {
     };
   }, []);
 
-  // Lorsque l’utilisateur tape sur “CALCULEZ !”
+  /** Au tap sur “CALCULEZ !” */
   const onStartPress = async () => {
+    if (starting) return;
+    setStarting(true);
     try {
       const allowed = await canStartTraining();
-      if (allowed) {
-        navigation.navigate("Train", { volume });
+      if (!allowed) {
+        return navigation.navigate("Info");
+      }
+
+      // Si on est déjà sur "Train", empile une nouvelle session ; sinon navigate
+      const state = navigation.getState();
+      const current = state.routes[state.index]?.name;
+      if (current === "Train") {
+        navigation.push("Train", { volume });
       } else {
-        // Redirige vers ton écran d’info/paywall existant
-        navigation.navigate("Info");
+        navigation.navigate("Train", { volume });
       }
     } catch (e: any) {
       Alert.alert("Oups", e?.message ?? "Action impossible pour le moment.");
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -163,16 +188,20 @@ export default function EntrainementScreen({ navigation }: Props) {
           </View>
         </View>
 
-        <TouchableOpacity activeOpacity={0.9} style={styles.cta} onPress={onStartPress}>
-          <Text style={styles.ctaText}>CALCULEZ !</Text>
+        <TouchableOpacity
+          activeOpacity={0.9}
+          style={[styles.cta, starting && { opacity: 0.6 }]}
+          onPress={onStartPress}
+          disabled={starting}
+        >
+          <Text style={styles.ctaText}>{starting ? "..." : "CALCULEZ !"}</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
 
-/* ===================== Sous-composants ===================== */
-
+/** ---------- Sous-composants ---------- */
 function PositionsTable({
   positions,
   loading,
@@ -290,17 +319,16 @@ function VolPill({
   );
 }
 
-/* ===================== Styles ===================== */
-
+/** ---------- Styles ---------- */
 const COLORS = {
-  bg: theme?.colors?.bg ?? "#0E1420",
+  bg: theme?.colors?.bg ?? "#0F0E20",
   text: theme?.colors?.text ?? "#F5F7FB",
   subtext: theme?.colors?.subtext ?? "#9CA3AF",
   card: "#FFFFFF",
   purple: "#D36AD6",
   blue: "#CBE0FF",
-  blueDark: "#11283F",
-  orange: "#FFB25E",
+  blueDark: "#0F0E20",
+  orange: "#FFD93D",
 };
 
 const styles = StyleSheet.create({
@@ -396,5 +424,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginTop: 6,
   },
-  ctaText: { color: "#171717", fontWeight: "900", fontSize: 16, letterSpacing: 0.2 },
+  ctaText: { color: "#0F0E20", fontWeight: "900", fontSize: 16, letterSpacing: 0.2 },
 });

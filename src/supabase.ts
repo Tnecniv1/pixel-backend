@@ -1,28 +1,43 @@
-// src/supabase.ts
-import { createClient } from "@supabase/supabase-js";
+// supabase.ts
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 
-// Expo peut exposer extra différemment selon le contexte/canal → on tente plusieurs emplacements
-const extra =
-  (Constants?.expoConfig?.extra as any) ??
-  (Constants?.manifest2 as any)?.extra ??
-  (Constants?.manifest as any)?.extra ??
-  {};
+// 1) Lit d'abord les variables d'env (EXPO_PUBLIC_*), puis fallback sur expo.extra
+const SUPABASE_URL =
+  process.env.EXPO_PUBLIC_SUPABASE_URL ||
+  (Constants.expoConfig?.extra as any)?.SUPABASE_URL ||
+  (Constants.manifestExtra as any)?.SUPABASE_URL;
 
-const SUPABASE_URL: string | undefined = extra.SUPABASE_URL;
-const SUPABASE_ANON_KEY: string | undefined = extra.SUPABASE_ANON_KEY;
+const SUPABASE_ANON_KEY =
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+  (Constants.expoConfig?.extra as any)?.SUPABASE_ANON_KEY ||
+  (Constants.manifestExtra as any)?.SUPABASE_ANON_KEY;
 
-// DEBUG TEMP: vérifie ce que l’app lit
-// (à retirer quand OK)
-console.log("SUPABASE_URL:", SUPABASE_URL);
-console.log("ANON len:", SUPABASE_ANON_KEY ? SUPABASE_ANON_KEY.length : 0);
+// 2) Crée un singleton (utile en dev hot-reload)
+declare global {
+  // eslint-disable-next-line no-var
+  var __supabase__: SupabaseClient | undefined;
+}
 
-export const supabase = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!, {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
-  },
-});
+if (!global.__supabase__) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    console.warn(
+      "[supabase] Missing SUPABASE_URL / SUPABASE_ANON_KEY. " +
+        "Configure EXPO_PUBLIC_* env vars ou expo.extra."
+    );
+  }
+
+  global.__supabase__ = createClient(SUPABASE_URL ?? "", SUPABASE_ANON_KEY ?? "", {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      storage: AsyncStorage, // indispensable en React Native
+      detectSessionInUrl: false, // RN : pas d’URL callback
+    },
+  });
+}
+
+// 3) Exporte le client unique
+export const supabase = global.__supabase__!;
+export default supabase;

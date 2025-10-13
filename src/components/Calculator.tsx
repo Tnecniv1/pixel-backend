@@ -12,26 +12,22 @@ import {
 import { Asset } from "expo-asset";
 import { Audio } from "expo-av";
 
-/**
- * Calculator (Pixel)
- * - Grille 3×4, touches carrées & responsives
- * - Boutons fixes:
- *    - index 9  (ligne 4, col 1)  → Corriger (••)
- *    - index 11 (ligne 4, col 3)  → Valider (•)
- * - Chiffres: ordre de base [4,8,2,5,0,1,7,6,3,9] sur les 10 autres cases
- * - Déstabilisation (mutuellement exclusive), déclenchée UNIQUEMENT à la validation:
- *    - Au submit() on prépare le “prochain piège” (pending) pour l’opération suivante.
- *    - À chaque changement de currentIndex (nouvelle opération), on active le “pending”.
- *    - La durée se décompte à CHAQUE validation (pas à chaque tap).
- */
+/** ========================================================================
+ * Calculator (Pixel) — 4×3 keypad, grouped & thumb-friendly
+ * - 4 rows × 3 cols (fixed)
+ * - Horizontal: keys inside a centered cluster (clusterRatio of grid width)
+ * - Vertical: rows block positioned with verticalBias (0 top … 1 bottom)
+ * - keyScale (default 0.88), gap (default 10), compactDisplay (optional)
+ * - Sounds, haptics, HIDE/SHUFFLE unchanged
+ * ======================================================================== */
 
-// 🎨 Personnalisation
 const COLORS = {
-  keyBg: "#6a5acd",
+  keyBg: "#4C5BCE",
   keyText: "#f8f8ff",
   displayText: "#fefdffff",
   displayBorder: "#7aa1f5ff",
 };
+
 const UI = {
   cols: 3,
   gap: 10,
@@ -39,9 +35,9 @@ const UI = {
   keyFontSize: 22,
   displayRadius: 12,
   displayFontSize: 28,
+  displayHeight: 64,
 };
 
-// 🔔 Haptique (optionnelle, safe-require)
 type HapticsNS = {
   impactAsync?: (s: any) => Promise<void>;
   selectionAsync?: () => Promise<void>;
@@ -52,7 +48,6 @@ type HapticsNS = {
 let H: HapticsNS = null;
 try { H = require("expo-haptics"); } catch { H = null; }
 
-// Types
 type Range = { min: number; max: number };
 type DestabMode = "HIDE" | "SHUFFLE";
 
@@ -63,28 +58,30 @@ type Props = {
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 
-  // Déstabilisation (pilotées depuis TrainScreen)
-  currentIndex?: number;             // <- i
-  destabilizeEnabled?: boolean;      // default false
-  hideChance?: number;               // default 0.25
-  hideRange?: Range;                 // default {min:1,max:2}
-  shuffleChance?: number;            // default 0.25
-  shuffleRange?: Range;              // default {min:1,max:2}
+  currentIndex?: number;
+  destabilizeEnabled?: boolean;
+  hideChance?: number;
+  hideRange?: Range;
+  shuffleChance?: number;
+  shuffleRange?: Range;
+
+  keyScale?: number;         // size multiplier for keys (default 0.88)
+  gap?: number;              // minimal spacing between keys (default 10)
+  compactDisplay?: boolean;  // reduce display height slightly
+  clusterRatio?: number;     // keypad cluster width vs grid width (default 0.78)
+  verticalBias?: number;     // 0 top … 0.5 center … 1 bottom (default 0.7)
 };
 
-// Constantes layout
-const BASE_ORDER = ["4", "8", "2", "5", "0", "1", "7", "6", "3", "9"]; // 10 chiffres
+const BASE_ORDER = ["4", "8", "2", "5", "0", "1", "7", "6", "3", "9"];
 const GRID_SIZE = 12;
-const ERASE_INDEX = 9;   // bas-gauche
-const SUBMIT_INDEX = 11; // bas-droite
-const DIGIT_SLOTS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]; // 10 positions (tout sauf 9 et 11)
+const ROWS = 4;
+const COLS = 3;
+const ERASE_INDEX = 9;
+const SUBMIT_INDEX = 11;
+const DIGIT_SLOTS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10];
 
-// Utils
 const randInt = (min: number, max: number) =>
   Math.floor(min + Math.random() * (max - min + 1));
-
-const pickOne = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
-
 const shuffleArr = <T,>(arr: T[]) => {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -103,31 +100,35 @@ export default function Calculator({
 
   currentIndex,
   destabilizeEnabled = false,
-  hideChance = 0.25,
+  hideChance = 0.05,
   hideRange = { min: 1, max: 2 },
-  shuffleChance = 0.25,
+  shuffleChance = 0.1,
   shuffleRange = { min: 1, max: 2 },
+
+  keyScale = 0.88,
+  gap,
+  compactDisplay = false,
+  clusterRatio = 0.78,
+  verticalBias = 2,     // 👈 pousse le pavé vers le bas par défaut
 }: Props) {
   const [local, setLocal] = useState<string>(value);
-  const [gridW, setGridW] = useState(0);
 
-  // expo-av Sound
+  // Grid area (under the display)
+  const [gridW, setGridW] = useState(0);
+  const [gridH, setGridH] = useState(0);
+
   const soundRef = useRef<Audio.Sound | null>(null);
 
-  // État actif pour l'OPÉRATION COURANTE
   const activeModeRef = useRef<DestabMode | null>(null);
-  const activeRemainingRef = useRef<number>(0); // en nb d'opérations à partir de MAINTENANT (se décrémente à la prochaine validation)
-
-  // Piège “en attente” pour la PROCHAINE opération (préparé dans submit)
+  const activeRemainingRef = useRef<number>(0);
   const pendingModeRef = useRef<DestabMode | null>(null);
   const pendingRemainingRef = useRef<number>(0);
 
-  // Ordre des chiffres pour l’opération courante
   const [digitOrder, setDigitOrder] = useState<string[]>(BASE_ORDER);
 
   useEffect(() => setLocal(value), [value]);
 
-  // ------- AUDIO (expo-av) -------
+  // --- AUDIO ---
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -154,7 +155,7 @@ export default function Calculator({
         if (mounted) soundRef.current = sound;
         else await sound.unloadAsync();
       } catch {
-        soundRef.current = null; // silencieux si indispo
+        soundRef.current = null;
       }
     })();
     return () => {
@@ -163,7 +164,7 @@ export default function Calculator({
     };
   }, []);
 
-  // ------- ACTIVATION DU PIÈGE À LA NOUVELLE OPÉRATION -------
+  // --- activate pending mode on new op ---
   useEffect(() => {
     if (!destabilizeEnabled) {
       activeModeRef.current = null;
@@ -175,29 +176,20 @@ export default function Calculator({
     }
     if (typeof currentIndex !== "number") return;
 
-    // On entre sur une NOUVELLE opération → activer le pending (préparé au submit précédent)
     activeModeRef.current = pendingModeRef.current;
     activeRemainingRef.current = pendingRemainingRef.current;
-
-    // Nettoyer le pending
     pendingModeRef.current = null;
     pendingRemainingRef.current = 0;
 
-    // Ajuster l'ordre selon le mode actif
-    if (activeModeRef.current === "SHUFFLE") {
-      // Au début de CHAQUE opération sous SHUFFLE, on mélange (pour plus de variété)
-      setDigitOrder(shuffleArr(BASE_ORDER));
-    } else {
-      setDigitOrder(BASE_ORDER);
-    }
+    setDigitOrder(activeModeRef.current === "SHUFFLE" ? shuffleArr(BASE_ORDER) : BASE_ORDER);
   }, [currentIndex, destabilizeEnabled]);
 
-  // ------- Haptics -------
+  // --- Haptics ---
   const hTap = () => H?.impactAsync?.(H.ImpactFeedbackStyle?.Light).catch(() => {});
   const hSelect = () => H?.selectionAsync?.().catch(() => {});
   const hSuccess = () => H?.notificationAsync?.(H.NotificationFeedbackType?.Success).catch(() => {});
 
-  // ------- Actions -------
+  // --- Actions ---
   const pressNumber = useCallback(
     (n: string) => {
       if (disabled) return;
@@ -224,7 +216,6 @@ export default function Calculator({
   const submit = useCallback(() => {
     if (disabled) return;
 
-    // 1) On remet la réponse et on notifie le parent
     onSubmit?.(local ?? "");
     hSuccess();
     (async () => {
@@ -236,27 +227,20 @@ export default function Calculator({
       } catch {}
     })();
 
-    // 2) Gestion des séquences (décomptage ET préparation du prochain piège)
     if (!destabilizeEnabled) return;
 
-    // Décompter la séquence courante (si active) — elle s’applique jusqu’à CETTE validation
     if (activeModeRef.current) {
       const remain = Math.max(0, (activeRemainingRef.current || 0) - 1);
       activeRemainingRef.current = remain;
-      if (remain === 0) {
-        activeModeRef.current = null;
-      }
+      if (remain === 0) activeModeRef.current = null;
     }
 
-    // Si une séquence reste active après ce décompte (remain > 0),
-    // alors on prolonge le même mode pour la prochaine opération.
     if (activeModeRef.current && activeRemainingRef.current > 0) {
       pendingModeRef.current = activeModeRef.current;
-      pendingRemainingRef.current = activeRemainingRef.current; // déjà décrémenté
+      pendingRemainingRef.current = activeRemainingRef.current;
       return;
     }
 
-    // Sinon, on peut tirer un nouveau piège pour la prochaine opération.
     const h = Math.random() < (hideChance ?? 0.05);
     const s = Math.random() < (shuffleChance ?? 0.10);
 
@@ -266,15 +250,9 @@ export default function Calculator({
       return;
     }
 
-    // Jamais en même temps → si les deux “tirent”, choisir au hasard
     let chosen: DestabMode = "HIDE";
-    if (h && s) {
-      chosen = Math.random() < 0.5 ? "HIDE" : "SHUFFLE";
-    } else if (s) {
-      chosen = "SHUFFLE";
-    } else {
-      chosen = "HIDE";
-    }
+    if (h && s) chosen = Math.random() < 0.5 ? "HIDE" : "SHUFFLE";
+    else if (s) chosen = "SHUFFLE";
 
     const range = chosen === "HIDE"
       ? (hideRange ?? { min: 1, max: 2 })
@@ -285,13 +263,57 @@ export default function Calculator({
     pendingRemainingRef.current = duration;
   }, [disabled, onSubmit, local, destabilizeEnabled, hideChance, hideRange, shuffleChance, shuffleRange]);
 
-  // ------- Layout 3 colonnes (carrés) -------
-  const COLS = UI.cols;
-  const GAP = UI.gap;
+  // --- Sizing ---
+  const GAP = gap ?? UI.gap;
+
+  // Key size from width/height (using cluster width) then scaled
+  const clusterWidth = useMemo(() => {
+    if (gridW <= 0) return 0;
+    return Math.floor(gridW * Math.min(1, Math.max(0.5, clusterRatio)));
+  }, [gridW, clusterRatio]);
+
+  const keySizeRaw = useMemo(() => {
+    if (clusterWidth <= 0) return 0;
+    const byWidth = Math.floor((clusterWidth - GAP * (COLS - 1)) / COLS);
+    const byHeight = gridH > 0 ? Math.floor((gridH - GAP * (ROWS - 1)) / ROWS) : byWidth;
+    return Math.min(byWidth, byHeight);
+  }, [clusterWidth, gridH, GAP]);
+
+  const keySize = Math.max(0, Math.floor(keySizeRaw * keyScale));
+
+  // Vertical spacing + bias: distribute the free space with a bias to the bottom
+  const vGap = useMemo(() => {
+    if (gridH <= 0 || keySize <= 0) return GAP;
+    const minRowsHeight = ROWS * keySize + (ROWS - 1) * GAP;
+    if (gridH <= minRowsHeight) return GAP;
+    // keep uniform gaps between rows, at least GAP
+    const extra = gridH - ROWS * keySize;
+    return Math.max(GAP, Math.floor(extra / Math.max(1, ROWS - 1)));
+  }, [gridH, keySize, GAP]);
+
+  // pads top/bottom with bias
+  const { topPad, bottomPad } = useMemo(() => {
+    if (gridH <= 0 || keySize <= 0) return { topPad: 0, bottomPad: 0 };
+    const used = ROWS * keySize + (ROWS - 1) * vGap;
+    const free = Math.max(0, gridH - used);
+    const bias = Math.min(1, Math.max(0, verticalBias));
+    const top = Math.floor(free * (1 - bias));
+    const bottom = free - top;
+    return { topPad: top, bottomPad: bottom };
+  }, [gridH, keySize, vGap, verticalBias]);
+
+  const sidePad = useMemo(() => Math.max(0, Math.floor((gridW - clusterWidth) / 2)), [gridW, clusterWidth]);
+
+  const onGridLayout = (e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setGridW(Math.floor(width));
+    setGridH(Math.floor(height));
+  };
+
+  // Slots with erase/submit
   const [slots, setSlots] = useState<(string | "erase" | "submit")[]>(
     new Array(GRID_SIZE).fill(null) as any
   );
-
   useEffect(() => {
     const next = new Array(GRID_SIZE).fill(null) as (string | "erase" | "submit")[];
     next[ERASE_INDEX] = "erase";
@@ -302,48 +324,25 @@ export default function Calculator({
     setSlots(next);
   }, [digitOrder]);
 
-  const [gridWState, setGridWState] = useState(0);
-  const keySize = useMemo(() => {
-    const w = gridWState || gridW;
-    if (w <= 0) return 0;
-    return Math.floor((w - GAP * (COLS - 1)) / COLS);
-  }, [gridWState, gridW, COLS, GAP]);
-
-  const onGridLayout = (e: LayoutChangeEvent) => {
-    const w = Math.floor(e.nativeEvent.layout.width);
-    setGridW(w);
-    setGridWState(w);
-  };
-
-  // Rendu d'une touche
-  const renderSlot = useCallback(
+  const renderKey = useCallback(
     (k: string | "erase" | "submit", idx: number) => {
       const isErase = k === "erase";
       const isSubmit = k === "submit";
       const isDigit = !isErase && !isSubmit;
 
-      // Symboles
       const visualLabel = isErase ? "••" : isSubmit ? "•" : (k as string);
       const a11yLabel = isErase ? "Effacer" : isSubmit ? "Valider" : `Chiffre ${k}`;
-
       const onPress = isErase ? erase : isSubmit ? submit : () => pressNumber(k as string);
 
-      // HIDE actif → on masque seulement le texte des chiffres (pas •• / •)
       const shouldHide = activeModeRef.current === "HIDE" && isDigit;
-
-      const styleKey = {
-        width: keySize,
-        height: keySize,
-        marginRight: (idx % COLS) !== COLS - 1 ? GAP : 0,
-        marginBottom: GAP,
-      } as const;
+      const dynFontSize = Math.max(16, Math.floor(keySize * 0.44));
 
       return (
         <Pressable
-          key={`slot-${idx}`}
+          key={`key-${idx}`}
           style={({ pressed }) => [
             styles.keyBase,
-            styleKey,
+            { width: keySize, height: keySize, borderRadius: UI.keyRadius },
             pressed && styles.keyPressed,
             disabled && { opacity: 0.5 },
           ]}
@@ -352,27 +351,54 @@ export default function Calculator({
           accessibilityLabel={a11yLabel}
           hitSlop={8}
           disabled={disabled}
-          testID={`calc-key-${k}-${idx}`}
         >
-          <Text style={[styles.keyText, shouldHide && { opacity: 0 }]}>
+          <Text style={[styles.keyText, { fontSize: dynFontSize }, shouldHide && { opacity: 0 }]}>
             {visualLabel}
           </Text>
         </Pressable>
       );
     },
-    [erase, submit, pressNumber, disabled, keySize, COLS, GAP]
+    [erase, submit, pressNumber, disabled, keySize]
   );
+
+  const rows = useMemo(() => [
+    [slots[0], slots[1], slots[2]],
+    [slots[3], slots[4], slots[5]],
+    [slots[6], slots[7], slots[8]],
+    [slots[9], slots[10], slots[11]],
+  ], [slots]);
+
+  const displayH = compactDisplay ? Math.max(36, Math.floor(UI.displayHeight * 0.75)) : UI.displayHeight;
+  const displayFont = compactDisplay ? Math.max(18, Math.floor(UI.displayFontSize * 0.85)) : UI.displayFontSize;
 
   return (
     <View style={[styles.container, style]}>
-      {/* Afficheur */}
-      <View style={styles.display} testID="calc-display">
-        <Text style={styles.displayText}>{local || " "}</Text>
+      {/* Display */}
+      <View style={[styles.display, { minHeight: displayH }]}>
+        <Text style={[styles.displayText, { fontSize: displayFont }]}>{local || " "}</Text>
       </View>
 
-      {/* Grille 3×4 */}
+      {/* Grid area */}
       <View style={styles.grid} onLayout={onGridLayout}>
-        {keySize > 0 && slots.map((k, idx) => renderSlot(k, idx))}
+        {/* Top pad with bias */}
+        <View style={{ height: topPad }} />
+        {keySize > 0 && rows.map((row, r) => (
+          <View
+            key={`row-${r}`}
+            style={[
+              styles.row,
+              { marginBottom: r < ROWS - 1 ? vGap : 0, paddingHorizontal: sidePad },
+            ]}
+          >
+            <View style={[styles.rowInner, { width: clusterWidth }]}>
+              {row[0] != null && renderKey(row[0] as any, r * 3 + 0)}
+              {row[1] != null && renderKey(row[1] as any, r * 3 + 1)}
+              {row[2] != null && renderKey(row[2] as any, r * 3 + 2)}
+            </View>
+          </View>
+        ))}
+        {/* Bottom pad mirrors with bias */}
+        <View style={{ height: bottomPad }} />
       </View>
     </View>
   );
@@ -380,7 +406,7 @@ export default function Calculator({
 
 // Styles
 const styles = StyleSheet.create({
-  container: { gap: 12, flexGrow: 1 },
+  container: { gap: 12, flexGrow: 1, flexShrink: 1 },
   display: {
     borderWidth: 1,
     borderColor: COLORS.displayBorder,
@@ -388,24 +414,28 @@ const styles = StyleSheet.create({
     borderRadius: UI.displayRadius,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    minHeight: 52,
     justifyContent: "center",
   },
   displayText: {
     color: COLORS.displayText,
-    fontSize: UI.displayFontSize,
     textAlign: "center",
     fontWeight: "700",
   },
   grid: {
-    flex: 1,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignContent: "flex-start",
+    flexGrow: 1,
+    flexShrink: 1,
     justifyContent: "flex-start",
   },
+  row: {
+    flexDirection: "row",
+    justifyContent: "center",
+  },
+  rowInner: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignSelf: "center",
+  },
   keyBase: {
-    borderRadius: UI.keyRadius,
     backgroundColor: COLORS.keyBg,
     borderWidth: 1,
     borderColor: COLORS.keyBg,
@@ -414,9 +444,7 @@ const styles = StyleSheet.create({
   },
   keyPressed: { opacity: 0.88 },
   keyText: {
-    fontSize: UI.keyFontSize,
     fontWeight: "800",
     color: COLORS.keyText,
   },
 });
-

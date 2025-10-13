@@ -11,9 +11,17 @@ import {
 import Constants from "expo-constants";
 import { supabase } from "../supabase";
 import { theme } from "../theme";
-import Svg, { Line as SvgLine, Path as SvgPath, Rect, Text as SvgText } from "react-native-svg";
+import Svg, {
+  Line as SvgLine,
+  Path as SvgPath,
+  Rect,
+  Text as SvgText,
+  Defs,
+  LinearGradient,
+  Stop,
+  Circle,
+} from "react-native-svg";
 import { fetchWithSupabaseAuth } from "../api"; // chemin exact à vérifier
-
 
 /* ========================== Types ========================== */
 type ChartPoint = { x: number; y: number; label?: string };
@@ -31,19 +39,64 @@ const SCREEN_W = Dimensions.get("window").width;
 
 /* ====================== Utilitaires UI ===================== */
 const COLORS = {
-  bg: theme?.colors?.bg ?? "#0E1420",
-  text: theme?.colors?.text ?? "#F5F7FB",
-  sub: theme?.colors?.subtext ?? "#9CA3AF",
-  card: "#FFFFFF",
-  border: "#11283F",
-  line: "#223A5C",
-  marker: "#C066E2",
+  bg: theme?.colors?.bg ?? "#0B0C1A",
+  text: theme?.colors?.text ?? "#E8EAF6",
+  sub: theme?.colors?.subtext ?? "#98A0B5",
+  card: "rgba(26,27,43,0.92)",
+  border: "#27283A",
+  neon: "#BDA8FF", // ligne principale
+  neonGlow: "rgba(189,168,255,0.35)",
+  marker: "#C7B6FF",
+  track: "rgba(255,255,255,0.06)",
+  trackBorder: "rgba(255,255,255,0.10)",
+  purpleSoft: "rgba(122,90,248,0.22)",
+  title: "#E6E8FF",
+  green: "#4ADE80",
+  orange: "#FFB86B",
 };
 
-function Card({ children }: { children: React.ReactNode }) {
+/* ------------------ Cartes réutilisables (UI) ------------------ */
+function Card({ children, style }: { children: React.ReactNode; style?: any }) {
   return (
-    <View style={styles.cardOuter}>
+    <View style={[styles.cardOuter, style]}>
       <View style={styles.cardInner}>{children}</View>
+    </View>
+  );
+}
+
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <View style={styles.chip}>
+      <Text style={styles.chipText}>{children}</Text>
+    </View>
+  );
+}
+
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <View style={styles.badge}>
+      <Text style={styles.badgeText}>{children}</Text>
+    </View>
+  );
+}
+
+function KPI({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.kpi}>
+      <Text style={styles.kpiValue}>{value}</Text>
+      <Text style={styles.kpiLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function ProgressBar({ progress, label }: { progress: number; label?: string }) {
+  const pct = Math.max(0, Math.min(1, progress));
+  return (
+    <View style={styles.pbarWrap}>
+      <View style={styles.pbarTrack}>
+        <View style={[styles.pbarFill, { width: `${Math.round(pct * 100)}%` }]} />
+      </View>
+      {label ? <Text style={styles.pbarLabel}>{label}</Text> : null}
     </View>
   );
 }
@@ -57,13 +110,16 @@ function EmptyBox({ text }: { text: string }) {
 }
 
 /* ======================= LineChart (SVG) ======================= */
+/** Re-skin néon, même API interne (points:number[], width, …). */
 function LineChart({
   points,
   width,
-  height = 240,
-  padding = 28,
-  color = COLORS.line,
+  height = 220,
+  padding = 20,
+  color = COLORS.neon,
   markerColor = COLORS.marker,
+  showXAxis = true,
+  showYAxis = false,
 }: {
   points: number[];
   width: number;
@@ -71,6 +127,8 @@ function LineChart({
   padding?: number;
   color?: string;
   markerColor?: string;
+  showXAxis?: boolean;
+  showYAxis?: boolean;
 }) {
   if (!Array.isArray(points) || points.length < 2) {
     return (
@@ -78,10 +136,10 @@ function LineChart({
         style={{
           width,
           height,
-          backgroundColor: "#fff",
+          backgroundColor: "rgba(255,255,255,0.02)",
           borderRadius: 12,
           borderWidth: 1,
-          borderColor: "#e5e7eb",
+          borderColor: COLORS.trackBorder,
         }}
       />
     );
@@ -102,7 +160,7 @@ function LineChart({
   const yAt = (v: number) =>
     height - padding - ((v - minY) / Math.max(maxY - minY, 1e-6)) * innerH;
 
-  // courbe lissée (quadratic)
+  // path lissé quadratique (même principe, mais double pour glow)
   const d = (() => {
     const coords = points.map((v, i) => [xAt(i), yAt(v)] as const);
     let path = `M ${coords[0][0]} ${coords[0][1]}`;
@@ -117,55 +175,53 @@ function LineChart({
 
   return (
     <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      {/* axes */}
-      <SvgLine
-        x1={padding}
-        y1={height - padding}
-        x2={width - padding}
-        y2={height - padding}
-        stroke="#d1d5db"
-        strokeWidth={1.2}
-      />
-      <SvgLine
-        x1={padding}
-        y1={padding}
-        x2={padding}
-        y2={height - padding}
-        stroke="#d1d5db"
-        strokeWidth={1.2}
+      <Defs>
+        <LinearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0%" stopColor={COLORS.purpleSoft} />
+          <Stop offset="100%" stopColor="rgba(122,90,248,0)" />
+        </LinearGradient>
+      </Defs>
+
+      {/* Axe X minimal (option) */}
+      {showXAxis && (
+        <SvgLine
+          x1={padding}
+          y1={height - padding}
+          x2={width - padding}
+          y2={height - padding}
+          stroke={COLORS.trackBorder}
+          strokeWidth={1}
+        />
+      )}
+      {/* Axe Y coupé (option) */}
+      {showYAxis && (
+        <SvgLine
+          x1={padding}
+          y1={padding}
+          x2={padding}
+          y2={height - padding}
+          stroke={COLORS.trackBorder}
+          strokeWidth={1}
+        />
+      )}
+
+      {/* Zone sous courbe (léger) */}
+      <SvgPath
+        d={`${d} L ${width - padding} ${height - padding} L ${padding} ${height - padding} Z`}
+        fill="url(#areaGrad)"
+        opacity={0.35}
       />
 
-      {/* courbe */}
-      <SvgPath d={d} stroke={color} strokeWidth={2} fill="none" />
+      {/* Glow */}
+      <SvgPath d={d} stroke={COLORS.neonGlow} strokeWidth={8} fill="none" />
+      {/* Ligne principale */}
+      <SvgPath d={d} stroke={color} strokeWidth={3.5} fill="none" />
 
-      {/* marqueurs carrés violets */}
+      {/* Points ronds */}
       {points.map((v, i) => {
         const x = xAt(i);
         const y = yAt(v);
-        const size = 6;
-
-        return (
-          <React.Fragment key={`m-${i}`}>
-            <Rect
-              x={x - size / 2}
-              y={y - size / 2}
-              width={size}
-              height={size}
-              fill={markerColor}
-              rx={1.5}
-              ry={1.5}
-            />
-            <SvgText
-              x={x}
-              y={y - 8}
-              fontSize="10"
-              fill="#64748b"
-              textAnchor="middle"
-            >
-              {v}
-            </SvgText>
-          </React.Fragment>
-        );
+        return <Circle key={`p-${i}`} cx={x} cy={y} r={4} fill={markerColor} />;
       })}
     </Svg>
   );
@@ -174,16 +230,19 @@ function LineChart({
 /* ============== Helpers “jour Europe/Paris” ============== */
 function toParisDayString(iso: string | Date): string {
   const d = typeof iso === "string" ? new Date(iso) : iso;
-  // convertit en Europe/Paris puis renvoie 'YYYY-MM-DD'
-  const s = d.toLocaleString("en-CA", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" }); // en-CA => YYYY-MM-DD
-  return s;
+  const s = d.toLocaleString("en-CA", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return s; // YYYY-MM-DD
 }
 
 function computeStreakFromDates(isoDates: (string | Date)[]) {
   const daySet = new Set<string>();
   for (const x of isoDates) daySet.add(toParisDayString(x));
 
-  // courant: qui se termine "aujourd'hui Paris"
   const todayParis = toParisDayString(new Date());
   let cur = 0;
   let probe = new Date(todayParis);
@@ -192,13 +251,16 @@ function computeStreakFromDates(isoDates: (string | Date)[]) {
     probe.setDate(probe.getDate() - 1);
   }
 
-  // max: îlots consécutifs
-  const allDays = Array.from(daySet).sort(); // 'YYYY-MM-DD' triable
-  let max = 0, run = 0, prev: string | null = null;
+  const allDays = Array.from(daySet).sort();
+  let max = 0,
+    run = 0,
+    prev: string | null = null;
   for (const d of allDays) {
-    if (!prev) { run = 1; }
-    else {
-      const pd = new Date(prev); const nd = new Date(d);
+    if (!prev) {
+      run = 1;
+    } else {
+      const pd = new Date(prev);
+      const nd = new Date(d);
       const diff = (nd.getTime() - pd.getTime()) / 86400000;
       run = diff === 1 ? run + 1 : 1;
     }
@@ -259,7 +321,6 @@ async function fetchDayStreakAPI(): Promise<{ current: number; max: number } | n
 /* ============== Fallback local (Supabase) ============== */
 async function fallbackDayStreakFromEntrainement(): Promise<{ current: number; max: number } | null> {
   try {
-    // RLS doit restreindre à l'utilisateur courant, donc pas besoin de eq("Users_Id", ...)
     const twoYearsAgo = new Date(Date.now() - 730 * 86400000).toISOString();
     const { data, error } = await supabase
       .from("Entrainement")
@@ -274,7 +335,6 @@ async function fallbackDayStreakFromEntrainement(): Promise<{ current: number; m
     return null;
   }
 }
-
 
 /* ====================== Écran principal ====================== */
 export default function ProgressionScreen() {
@@ -322,33 +382,31 @@ export default function ProgressionScreen() {
   const points = pts.map((p) => (typeof p?.y === "number" ? p.y : 0));
   const labels = pts.map((p) => p?.label ?? String(p?.x ?? ""));
 
-
-
-  useEffect(() => {
-    (async () => {
-      // 1) essaie de rafraîchir
-      const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
-      if (refreshErr) console.log("[auth] refresh error:", refreshErr.message);
-
-      // 2) récupère la session courante
-      const { data, error } = await supabase.auth.getSession();
-      if (error) return console.log("[auth] getSession error:", error.message);
-
-      const token = data?.session?.access_token;
-      console.log("[auth] token FULL:", token); // temporaire
-    })();
-  }, []);
-
-
+  // KPIs faciles à partir des points
+  const last = points.length ? points[points.length - 1] : 0;
+  const prev = points.length > 1 ? points[points.length - 2] : 0;
+  const delta = last - prev;
+  const maxVal = points.length ? Math.max(...points) : 0;
+  const bestJump = points.reduce((best, v, i, arr) => {
+    if (i === 0) return best;
+    const d = v - arr[i - 1];
+    return d > best ? d : best;
+  }, 0);
 
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 24 }}>
-        <Text style={styles.h1}>Analyse Dynamique</Text>
-        <Text style={styles.h2}>Score cumulé • 10×100 obs • Mixte</Text>
+        {/* HERO */}
+        <View style={styles.hero}>
+          <Text style={styles.h1}>Analyse Dynamique</Text>
+          <View style={styles.chipsRow}>
+            <Chip>Score cumulé</Chip>
+            <Chip>10×100 obs</Chip>
+            <Chip>Mixte</Chip>
+          </View>
+        </View>
 
-        {/* Carte 1 : Graphe + résumé des streaks */}
-        {/* Carte 1 : Graphe seulement */}
+        {/* GRAPHE */}
         <Card>
           {loadingSeries ? (
             <View style={{ paddingVertical: 28 }}>
@@ -360,10 +418,13 @@ export default function ProgressionScreen() {
             <View>
               <LineChart
                 width={SCREEN_W - 40}
-                height={240}
+                height={220}
                 points={points}
-                color={COLORS.line}
+                color={COLORS.neon}
+                showXAxis
+                showYAxis={false}
               />
+              {/* Ticks X discrets */}
               <View style={styles.xAxisLabels}>
                 {labels.map((l, i) => (
                   <Text key={`x-${i}`} style={styles.xTick}>
@@ -371,26 +432,38 @@ export default function ProgressionScreen() {
                   </Text>
                 ))}
               </View>
+
+              {/* Badges overlay (max & meilleur delta) */}
+              <View style={styles.chartBadges}>
+                <Badge>Max: {maxVal}</Badge>
+                {bestJump > 0 ? <Badge>+{bestJump} (meilleur saut)</Badge> : null}
+              </View>
             </View>
           )}
         </Card>
 
-        {/* Carte 2 : Bloc dédié 'Série actuelle' */}
+        {/* KPIs compacts */}
+        <View style={styles.kpiRow}>
+          <KPI label="Score cumulé" value={`${last}`} />
+          <KPI label="Δ récent" value={`${delta >= 0 ? "+" : ""}${delta}`} />
+          <KPI label="Max" value={`${maxVal}`} />
+        </View>
+
+        {/* STREAK */}
         <Card>
-          <View style={styles.currentBox}>
-            <Text style={styles.currentLabel}>Série actuelle</Text>
+          <View style={styles.streakBox}>
+            <Text style={styles.streakTitle}>Série actuelle</Text>
             {loadingStreak ? (
               <ActivityIndicator />
             ) : streakCur > 0 ? (
-              <Text style={styles.currentValue}>{streakCur} j</Text>
+              <Text style={styles.streakValue}>🔥 {streakCur} j</Text>
             ) : (
-              <Text style={styles.currentHint}>Aucune série en cours</Text>
+              <Text style={styles.streakHint}>Aucune série en cours</Text>
             )}
-            {streakCur > 0 && (
-              <Text style={styles.currentHint}>
-                jours d’affilée avec ≥ 1 entraînement
-              </Text>
-            )}
+            <ProgressBar
+              progress={Math.min(1, streakCur / 50)}
+              label={`Prochain palier : 50 j • Record : ${streakMax} j`}
+            />
           </View>
         </Card>
       </ScrollView>
@@ -398,31 +471,34 @@ export default function ProgressionScreen() {
   );
 }
 
-
-
 /* ============================ Styles ============================ */
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
   container: { flex: 1, paddingHorizontal: 20, paddingTop: 12 },
 
+  hero: { alignItems: "center", marginBottom: 6, gap: 6 },
   h1: {
-    color: COLORS.text,
+    color: COLORS.title,
     fontWeight: "900",
     fontSize: 24,
     textAlign: "center",
-    marginTop: 8,
+    letterSpacing: 0.2,
   },
-  h2: {
-    color: COLORS.sub,
-    textAlign: "center",
-    marginBottom: 12,
-    marginTop: 4,
+  chipsRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" },
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(122,90,248,0.16)",
+    borderWidth: 1,
+    borderColor: COLORS.purpleSoft,
   },
+  chipText: { color: COLORS.text, fontWeight: "700", fontSize: 12 },
 
   cardOuter: {
     backgroundColor: COLORS.card,
     borderRadius: 16,
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: COLORS.border,
     overflow: "hidden",
     marginBottom: 14,
@@ -434,10 +510,12 @@ const styles = StyleSheet.create({
 
   empty: {
     padding: 16,
-    backgroundColor: "#F5F7FB",
+    backgroundColor: "rgba(255,255,255,0.02)",
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.trackBorder,
   },
-  emptyText: { color: COLORS.sub, fontSize: 15 },
+  emptyText: { color: COLORS.sub, fontSize: 14 },
 
   xAxisLabels: {
     flexDirection: "row",
@@ -447,10 +525,50 @@ const styles = StyleSheet.create({
   },
   xTick: { color: COLORS.sub, fontSize: 11 },
 
-  // Bloc "Série actuelle" dédié
-  currentBox: { alignItems: "center", paddingVertical: 12 },
-  currentLabel: { fontSize: 14, fontWeight: "600", color: "#6b7280", marginBottom: 4 },
-  currentValue: { fontSize: 40, fontWeight: "800", color: "#111827", letterSpacing: 0.5 },
-  currentHint: { fontSize: 12, color: "#9CA3AF", marginTop: 2 },
-});
+  chartBadges: { position: "absolute", top: 8, right: 8, gap: 6, alignItems: "flex-end" },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  badgeText: { color: COLORS.text, fontWeight: "800", fontSize: 10, letterSpacing: 0.3 },
 
+  kpiRow: { flexDirection: "row", gap: 10, marginBottom: 4 },
+  kpi: {
+    flex: 1,
+    backgroundColor: COLORS.card,
+    borderColor: COLORS.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    gap: 2,
+  },
+  kpiValue: { color: COLORS.title, fontSize: 18, fontWeight: "900" },
+  kpiLabel: { color: COLORS.sub, fontSize: 11, fontWeight: "600" },
+
+  streakBox: { alignItems: "center", gap: 6 },
+  streakTitle: { fontSize: 12, fontWeight: "800", color: COLORS.sub, letterSpacing: 0.4 },
+  streakValue: { fontSize: 28, fontWeight: "900", color: COLORS.title },
+  streakHint: { fontSize: 12, color: COLORS.sub },
+
+  pbarWrap: { width: "100%", gap: 4, marginTop: 2 },
+  pbarTrack: {
+    height: 12,
+    borderRadius: 999,
+    backgroundColor: COLORS.track,
+    borderWidth: 1,
+    borderColor: COLORS.trackBorder,
+    overflow: "hidden",
+  },
+  pbarFill: {
+    height: "100%",
+    backgroundColor: COLORS.purpleSoft,
+    borderRadius: 999,
+  },
+  pbarLabel: { color: COLORS.sub, fontSize: 11, textAlign: "center" },
+});

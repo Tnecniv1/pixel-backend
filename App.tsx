@@ -15,6 +15,7 @@ import LeaderboardScreen from "./src/screens/LeaderboardScreen";
 import InfoScreen from "./src/screens/InfoScreen";
 import SignUpScreen from "./src/screens/SignUpScreen";
 import PaywallScreen from "./src/screens/PaywallScreen"; 
+import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 
 import { AuthProvider, useAuth } from "./src/auth";
 
@@ -118,6 +119,13 @@ function Router() {
           component={SignUpScreen}
           options={{ title: "Créer un compte" }}
         />
+
+        <Stack.Screen 
+          name="ForgotPassword" 
+          component={ForgotPasswordScreen} 
+          options={{ title: "Mot de passe oublié" }} 
+          />
+
       </Stack.Navigator>
     );
   }
@@ -183,5 +191,3 @@ export default function App() {
     </AuthProvider>
   );
 }
-
-

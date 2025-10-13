@@ -1,0 +1,506 @@
+# app/routers/parcours.py
+from fastapi import APIRouter, HTTPException, Query, Header
+from typing import Optional, Dict, Any, Literal, List
+from ..deps import supabase, user_scoped_client
+import logging
+
+logger = logging.getLogger("uvicorn.error")
+router = APIRouter(prefix="/parcours", tags=["parcours"])
+
+OpType = Literal["Addition", "Soustraction", "Multiplication"]
+
+# -------------------------------------------------------------------
+# Helpers communs (version sb-aware)
+# -------------------------------------------------------------------
+
+def _infer_user_id(
+    sb,
+    user_id: Optional[int],
+    entrainement_id: Optional[int],
+    parcours_id: Optional[int],
+) -> Optional[int]:
+    """Retrouve Users_Id à partir de l’un des 3 indices en utilisant le client lié au JWT."""
+    if user_id is not None:
+        return int(user_id)
+
+    if entrainement_id is not None:
+        try:
+            r = (
+                sb.table("Entrainement")
+                .select("Users_Id")
+                .eq("id", entrainement_id)
+                .limit(1)
+                .execute()
+            )
+            row = (getattr(r, "data", []) or [None])[0]
+            if row and row.get("Users_Id") is not None:
+                return int(row["Users_Id"])
+        except Exception:
+            pass
+
+    if parcours_id is not None:
+        try:
+            r = (
+                sb.table("Suivi_Parcours")
+                .select("Users_Id")
+                .eq("Parcours_Id", parcours_id)
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            row = (getattr(r, "data", []) or [None])[0]
+            if row and row.get("Users_Id") is not None:
+                return int(row["Users_Id"])
+        except Exception:
+            pass
+
+    return None
+
+
+def _last_suivi_for_type(sb, users_id: int, typ: OpType) -> Optional[Dict[str, Any]]:
+    """Retourne la dernière position (niveau + meta) pour un type d'opération donné."""
+    try:
+        res = (
+            sb.table("Suivi_Parcours")
+            .select("id,Users_Id,Parcours_Id,Date,Taux_Reussite,Type_Evolution")
+            .eq("Users_Id", users_id)
+            .order("id", desc=True)
+            .limit(300)
+            .execute()
+        )
+        suivis = getattr(res, "data", []) or []
+    except Exception as e:
+        print("[parcours] _last_suivi_for_type - err Suivi_Parcours:", e)
+        return None
+
+    for s in suivis:
+        pid = s.get("Parcours_Id")
+        if not pid:
+            continue
+        try:
+            p = (
+                sb.table("Parcours")
+                .select("id,Niveau,Type_Operation")
+                .eq("id", pid)
+                .limit(1)
+                .execute()
+            )
+            prow = (getattr(p, "data", []) or [None])[0]
+        except Exception as e:
+            print("[parcours] _last_suivi_for_type - err Parcours:", e)
+            continue
+
+        if not prow or prow.get("Type_Operation") != typ:
+            continue
+
+        return {
+            "niveau": prow.get("Niveau"),
+            "parcours_id": pid,
+            "taux": s.get("Taux_Reussite"),
+            "type_evolution": s.get("Type_Evolution"),
+            "date": s.get("Date"),
+        }
+
+    return None
+
+
+def _last_suivi_by_type(sb, users_id: int) -> Dict[str, Dict[str, Any]]:
+    """
+    Retourne, pour chaque type d’opération, le dernier suivi + le parcours associé
+    + le critère et les 'restantes' avant prochain test critique (calculé avec Derniere_Observation_Id).
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    seen = set()
+
+    try:
+        rs = (
+            sb.table("Suivi_Parcours")
+            .select("id,Users_Id,Parcours_Id,Date,Taux_Reussite,Type_Evolution,Derniere_Observation_Id")
+            .eq("Users_Id", users_id)
+            .order("id", desc=True)
+            .limit(200)
+            .execute()
+        )
+        suivis = getattr(rs, "data", []) or []
+    except Exception as e:
+        print("[parcours] _last_suivi_by_type - err Suivi_Parcours:", e)
+        suivis = []
+
+    for s in suivis:
+        pid = s.get("Parcours_Id")
+        if not pid:
+            continue
+
+        try:
+            pr = (
+                sb.table("Parcours")
+                .select("id,Type_Operation,Niveau,Critere")
+                .eq("id", pid)
+                .limit(1)
+                .execute()
+            )
+            prow = (getattr(pr, "data", []) or [None])[0]
+        except Exception as e:
+            print("[parcours] _last_suivi_by_type - err Parcours:", e)
+            prow = None
+
+        if not prow:
+            continue
+
+        typ = prow.get("Type_Operation")
+        if not typ or typ in seen:
+            continue
+
+        critere = int(prow.get("Critere") or 20)
+        last_obs_id = int(s.get("Derniere_Observation_Id") or 0)
+
+        # compte les obs réalisées DEPUIS le dernier test critique
+        try:
+            cnt = (
+                sb.table("Observations")
+                .select("id", count="exact")
+                .eq("Parcours_Id", pid)
+                .gt("id", last_obs_id)
+                .execute()
+            )
+            obs_since = int(getattr(cnt, "count", 0) or 0)
+        except Exception:
+            obs_since = 0
+
+        restantes = max(critere - obs_since, 0)
+
+        out[typ] = {
+            "niveau": prow.get("Niveau"),
+            "parcours_id": pid,
+            "taux": s.get("Taux_Reussite"),
+            "type_evolution": s.get("Type_Evolution"),
+            "date": s.get("Date"),
+            "critere": critere,
+            "restantes": restantes,
+        }
+
+        seen.add(typ)
+        if len(out) == 3:
+            break
+
+    return out
+
+# -------------------------------------------------------------------
+# 🔹 Nouveau helper : somme via RPC SQL (corrige la limite 1000)
+# -------------------------------------------------------------------
+
+def _sum_user_score_via_rpc(sb, users_id: int) -> int:
+    """Calcule le total via la fonction SQL RPC public.sum_user_score(uid)."""
+    try:
+        r = sb.rpc("sum_user_score", {"uid": users_id}).execute()
+        data = getattr(r, "data", None)
+        if isinstance(data, list) and data:
+            data = data[0]
+        return int(data or 0)
+    except Exception as e:
+        print("[parcours] rpc sum_user_score error:", e)
+        return 0
+
+# -------------------------------------------------------------------
+# (Ancien) Somme côté Python — conservé en fallback
+# -------------------------------------------------------------------
+
+def _sum_user_score_via_entrainement(sb, users_id: int) -> int:
+    """Score TOTAL = somme de Observations.Score pour tous les Entrainement du user (fallback)."""
+    try:
+        res_e = (
+            sb.table("Entrainement")
+            .select("id")
+            .eq("Users_Id", users_id)
+            .limit(50000)
+            .execute()
+        )
+        eids: List[int] = [
+            int(r["id"]) for r in (getattr(res_e, "data", []) or []) if r.get("id") is not None
+        ]
+    except Exception as e:
+        print("[users.score_total] fetch Entrainement error:", e)
+        eids = []
+
+    if not eids:
+        return 0
+
+    total = 0
+    BATCH = 1000
+    for i in range(0, len(eids), BATCH):
+        chunk = eids[i : i + BATCH]
+        try:
+            res_o = (
+                sb.table("Observations")
+                .select("Score")
+                .in_("Entrainement_Id", chunk)
+                .limit(200000)
+                .execute()
+            )
+            rows = getattr(res_o, "data", []) or []
+        except Exception as e:
+            print("[users.score_total] fetch Observations error:", e)
+            rows = []
+
+        for r in rows:
+            sc = r.get("Score")
+            if sc is None:
+                continue
+            try:
+                total += int(float(str(sc).strip()))
+            except Exception:
+                pass
+
+    return int(total)
+
+# -------------------------------------------------------------------
+# GET /parcours/position : une seule opération
+# -------------------------------------------------------------------
+@router.get("/position")
+def get_parcours_position(
+    type: OpType = Query(..., description="Addition | Soustraction | Multiplication"),
+    user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
+    entrainement_id: Optional[int] = Query(None, description="(optionnel) via Entrainement.id"),
+    parcours_id: Optional[int] = Query(None, description="(optionnel) via Suivi_Parcours.Parcours_Id"),
+    authorization: Optional[str] = Header(default=None),
+):
+    sb = user_scoped_client(authorization)
+    uid = _infer_user_id(sb, user_id, entrainement_id, parcours_id)
+    if uid is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Impossible de déterminer l'utilisateur (user_id / entrainement_id / parcours_id).",
+        )
+
+    pos = _last_suivi_for_type(sb, uid, type)
+    if not pos:
+        return {"detail": f"Aucune position pour {type}."}
+    return pos
+
+# -------------------------------------------------------------------
+# GET /parcours/positions_currentes : 3 opérations + score total + taux moyen
+# -------------------------------------------------------------------
+@router.get("/positions_currentes")
+def positions_currentes(
+    user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
+    parcours_id: Optional[int] = Query(None, description="Parcours seed si user_id absent"),
+    authorization: Optional[str] = Header(default=None),
+):
+    """Renvoie les niveaux par opération, + score_points (via RPC), + score_global (moyenne des taux)."""
+    sb = user_scoped_client(authorization)
+
+    # 1) déterminer l'utilisateur
+    uid: Optional[int] = user_id
+    if uid is None and parcours_id is not None:
+        try:
+            sp = (
+                sb.table("Suivi_Parcours")
+                .select("Users_Id")
+                .eq("Parcours_Id", parcours_id)
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            srow = (getattr(sp, "data", []) or [None])[0]
+            if srow and srow.get("Users_Id") is not None:
+                uid = int(srow["Users_Id"])
+        except Exception as e:
+            print("[parcours] positions_currentes - err infer user from parcours_id:", e)
+
+    if uid is None:
+        return {
+            "Addition": None,
+            "Soustraction": None,
+            "Multiplication": None,
+            "score_points": None,
+            "score_global": None,
+        }
+
+    # 2) positions par type
+    by_type = _last_suivi_by_type(sb, uid)
+
+    # 3) score total — priorité RPC, fallback ancien helper au besoin
+    try:
+        score_total = _sum_user_score_via_rpc(sb, uid)
+        if score_total == 0:
+            score_total = _sum_user_score_via_entrainement(sb, uid)
+    except Exception as e:
+        print("[parcours] positions_currentes - err score total (rpc/fallback):", e)
+        score_total = 0
+
+    # 4) score_global (% moyen des taux connus)
+    taux_vals = [
+        v.get("taux")
+        for v in by_type.values()
+        if isinstance(v, dict) and isinstance(v.get("taux"), (int, float))
+    ]
+    score_global = round(sum(taux_vals) / len(taux_vals), 2) if taux_vals else None
+
+    return {
+        "Addition": by_type.get("Addition"),
+        "Soustraction": by_type.get("Soustraction"),
+        "Multiplication": by_type.get("Multiplication"),
+        "score_points": score_total,
+        "score_global": score_global,
+    }
+
+# -------------------------------------------------------------------
+# Endpoint dédié pour le score total
+# -------------------------------------------------------------------
+@router.get("/score_total")
+def get_user_score_total(
+    user_id: int = Query(..., description="ID interne (BIGINT) de l'utilisateur"),
+    authorization: Optional[str] = Header(default=None),
+):
+    sb = user_scoped_client(authorization)
+    try:
+        total = _sum_user_score_via_rpc(sb, user_id)
+        if total == 0:
+            total = _sum_user_score_via_entrainement(sb, user_id)
+    except Exception as e:
+        print("[parcours] score_total - err rpc/fallback:", e)
+        total = 0
+    return {"user_id": user_id, "score_points": total}
+
+# -------------------------------------------------------------------
+# Score cumulé (fenêtre)
+# -------------------------------------------------------------------
+@router.get("/score_cumule")
+def score_cumule(
+    user_id: Optional[int] = Query(None, description="Id interne utilisateur"),
+    parcours_id: Optional[int] = Query(None, description="Parcours seed pour inférer l'utilisateur"),
+    window_obs: int = Query(1000, ge=100, le=5000, description="Nb max d'observations (fenêtre)"),
+    bucket: int = Query(100, ge=10, le=1000, description="Taille d'un paquet d'observations"),
+    authorization: Optional[str] = Header(default=None),
+):
+    sb = user_scoped_client(authorization)
+
+    def _infer_user_from_parcours(pid: Optional[int]) -> Optional[int]:
+        if pid is None:
+            return None
+        try:
+            r = (
+                sb.table("Suivi_Parcours")
+                 .select("Users_Id")
+                 .eq("Parcours_Id", pid)
+                 .order("id", desc=True)
+                 .limit(1).execute()
+            )
+            row = (getattr(r, "data", []) or [None])[0]
+            if row and row.get("Users_Id") is not None:
+                return int(row["Users_Id"])
+        except Exception:
+            pass
+        return None
+
+    uid = user_id or _infer_user_from_parcours(parcours_id)
+    if uid is None:
+        raise HTTPException(status_code=400, detail="user_id ou parcours_id requis")
+
+    try:
+        e = (
+            sb.table("Entrainement")
+             .select("id")
+             .eq("Users_Id", uid)
+             .order("id", desc=True)
+             .limit(100000).execute()
+        )
+        eids = [int(r["id"]) for r in (getattr(e, "data", []) or []) if r.get("id") is not None]
+        if not eids:
+            return {"points": [], "meta": {"bucket": bucket, "window_obs": window_obs}}
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Supabase error Entrainement: {ex}")
+
+    try:
+        o = (
+            sb.table("Observations")
+             .select('"id","Score"')
+             .in_("Entrainement_Id", eids)
+             .order("id", desc=True)
+             .limit(window_obs)
+             .execute()
+        )
+        obs = getattr(o, "data", []) or []
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Supabase error Observations: {ex}")
+
+    if not obs:
+        return {"points": [], "meta": {"bucket": bucket, "window_obs": window_obs}}
+
+    obs.sort(key=lambda r: int(r.get("id", 0)))
+
+    def _num(v) -> int:
+        try:
+            if isinstance(v, (int, float)):
+                return int(v)
+            if isinstance(v, str) and v.strip() != "":
+                return int(float(v))
+        except Exception:
+            return 0
+        return 0
+
+    scores = [_num(r.get("Score")) for r in obs]
+
+    points = []
+    cumul = 0
+    for i in range(0, len(scores), bucket):
+        chunk = scores[i:i+bucket]
+        if not chunk:
+            break
+        cumul += sum(chunk)
+        points.append({"x": len(points)+1, "kpi": cumul})
+
+    points = points[-10:]
+
+    return {"points": points, "meta": {"bucket": bucket, "window_obs": window_obs}}
+
+# -------------------------------------------------------------------
+# Timeseries (fenêtres)
+# -------------------------------------------------------------------
+@router.get("/score_timeseries")
+def score_timeseries(
+    user_id: int | None = Query(None, description="Id interne utilisateur (Users.id entier)"),
+    parcours_id: int | None = Query(None, description="Si fourni, on infère l'utilisateur via Suivi_Parcours"),
+    step: int = Query(100, ge=1, description="taille d'une fenêtre (obs/point)"),
+    windows: int = Query(10, ge=1, le=50, description="nombre de points"),
+    authorization: Optional[str] = Header(default=None),  # client lié au JWT (RLS)
+):
+    """
+    Evolution du score CUMULÉ (toutes opérations), par tranches de `step` obs,
+    et retour des `windows` DERNIERS points, au format:
+      { "points": [{"x": <index absolu de bloc>, "y": <cumul global>}], "step": step, "windows": windows }
+    """
+    sb = user_scoped_client(authorization)
+
+    # --- 1) Résoudre l'utilisateur ---
+    uid = user_id
+    if uid is None and parcours_id is not None:
+        try:
+            r = (
+                sb.table("Suivi_Parcours")
+                  .select("Users_Id")
+                  .eq("Parcours_Id", parcours_id)
+                  .order("id", desc=True)
+                  .limit(1)
+                  .execute()
+            )
+            row = (getattr(r, "data", []) or [None])[0]
+            if row and row.get("Users_Id") is not None:
+                uid = int(row["Users_Id"])
+        except Exception as e:
+            print("[score_timeseries] infer user from parcours_id error:", e)
+
+    if uid is None:
+        return {"points": [], "step": step, "windows": windows, "reason": "no_user"}
+
+    # --- 2) ✅ Appel RPC : cumul GLOBAL (depuis l'origine), et on ne renvoie que les 10 (windows) derniers blocs ---
+    try:
+        rpc = sb.rpc("score_timeseries_global", {"uid": uid, "step": step, "windows": windows}).execute()
+        rows = getattr(rpc, "data", []) or []
+        # rows ~ [{ "x": 101, "y": 234 }, ...]  (x = index absolu du bloc, y = cumul global à la fin du bloc)
+        points = [{"x": int(r.get("x", 0)), "y": int(r.get("y", 0))} for r in rows]
+        return {"points": points, "step": step, "windows": windows}
+    except Exception as e:
+        print("[score_timeseries] rpc error:", e)
+        return {"points": [], "step": step, "windows": windows, "reason": "rpc_error"}
+

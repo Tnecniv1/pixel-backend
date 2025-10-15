@@ -39,20 +39,32 @@ export default function SocialAuthButtons() {
 
       console.log("[OAuth] Result =", res);
 
-      // 3) Vérifier la session
+      // 3) Vérifier la session avec retry
       if (res.type === "success") {
-        // Attendre un peu que Supabase traite le callback
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.log("[OAuth] Success, checking session...");
         
-        const { data: s, error: sessionError } = await supabase.auth.getSession();
+        // Attendre et retry jusqu'à 5 fois
+        let session = null;
+        for (let i = 0; i < 5; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          const { data: s, error: sessionError } = await supabase.auth.getSession();
+          
+          if (sessionError) {
+            console.error("[OAuth] Session error:", sessionError);
+          } else if (s.session) {
+            session = s.session;
+            break;
+          }
+          
+          console.log(`[OAuth] Retry ${i + 1}/5...`);
+        }
         
-        if (sessionError) {
-          console.error("[OAuth] Session error:", sessionError);
-          Alert.alert("Erreur", sessionError.message);
-        } else if (s.session) {
-          Alert.alert("Bienvenue 👋", `Connexion ${provider} réussie`);
+        if (session) {
+          console.log("[OAuth] Session found:", session.user.email);
+          Alert.alert("Bienvenue 👋", `Connexion ${provider} réussie !`);
         } else {
-          Alert.alert("Connexion incomplète", "Aucune session active détectée.");
+          Alert.alert("Connexion incomplète", "La session n'a pas pu être récupérée. Veuillez réessayer.");
         }
       } else if (res.type === "cancel") {
         Alert.alert("Annulé", "La connexion a été annulée.");

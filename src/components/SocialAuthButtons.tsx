@@ -13,7 +13,7 @@ const appReturnUrl = AuthSession.makeRedirectUri({
 });
 
 // 🔒 Proxy Expo : mets TON couple @owner/slug EXACT
-const EXPO_PROXY = "https://auth.expo.dev/@vcent.1/pixel-mobile";
+const EXPO_PROXY = "https://auth.expo.io/@vcent.1/pixel-mobile";
 
 console.log("appReturnUrl =", appReturnUrl);
 console.log("expoProxyRedirect =", EXPO_PROXY);

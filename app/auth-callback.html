@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authentification en cours...</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .container {
+      text-align: center;
+    }
+    .spinner {
+      border: 4px solid rgba(255, 255, 255, 0.3);
+      border-top: 4px solid white;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .error {
+      background: #ff4444;
+      padding: 20px;
+      border-radius: 8px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h2>Redirection vers l'application...</h2>
+    <p id="status">Connexion en cours</p>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    
+    try {
+      // Récupérer les paramètres de l'URL (query params)
+      const params = new URLSearchParams(window.location.search);
+      
+      // Récupérer les paramètres du hash (fragment)
+      const hash = window.location.hash.substring(1);
+      const hashParams = new URLSearchParams(hash);
+      
+      console.log('URL complète:', window.location.href);
+      console.log('Query params:', params.toString());
+      console.log('Hash params:', hashParams.toString());
+      
+      // Supabase peut retourner les tokens dans le hash OU dans les query params
+      const accessToken = hashParams.get('access_token') || params.get('access_token');
+      const refreshToken = hashParams.get('refresh_token') || params.get('refresh_token');
+      const tokenType = hashParams.get('token_type') || params.get('token_type');
+      const expiresIn = hashParams.get('expires_in') || params.get('expires_in');
+      const expiresAt = hashParams.get('expires_at') || params.get('expires_at');
+      
+      // Vérifier s'il y a une erreur
+      const error = hashParams.get('error') || params.get('error');
+      const errorDescription = hashParams.get('error_description') || params.get('error_description');
+      
+      if (error) {
+        throw new Error(`Erreur OAuth: ${error} - ${errorDescription}`);
+      }
+      
+      if (!accessToken || !refreshToken) {
+        console.error('Tokens manquants');
+        console.error('Access token:', accessToken);
+        console.error('Refresh token:', refreshToken);
+        throw new Error('Tokens d\'authentification manquants');
+      }
+      
+      // Construire l'URL de deep link avec tous les paramètres
+      const deepLinkParams = new URLSearchParams({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        token_type: tokenType || 'bearer',
+        expires_in: expiresIn || '3600',
+        expires_at: expiresAt || ''
+      });
+      
+      const deepLink = `pixelcalc://auth-callback?${deepLinkParams.toString()}`;
+      
+      console.log('Deep link:', deepLink);
+      statusEl.textContent = 'Redirection vers Pixel Calc...';
+      
+      // Rediriger vers l'app
+      window.location.href = deepLink;
+      
+      // Fallback après 2 secondes si la redirection échoue
+      setTimeout(() => {
+        statusEl.textContent = 'Si l\'application ne s\'ouvre pas, veuillez la lancer manuellement.';
+      }, 2000);
+      
+    } catch (e) {
+      console.error('Erreur:', e);
+      document.querySelector('.container').innerHTML = `
+        <div class="error">
+          <h3>❌ Erreur</h3>
+          <p>${e.message}</p>
+          <p style="font-size: 12px; margin-top: 10px;">Veuillez réessayer depuis l'application.</p>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>

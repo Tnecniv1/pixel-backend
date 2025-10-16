@@ -62,6 +62,12 @@ def email_confirmed_page():
         media_type="text/html"
     )
 
+@app.get("/auth-callback")
+async def auth_callback():
+    """Page de redirection OAuth pour l'app mobile"""
+    file_path = os.path.join(os.path.dirname(__file__), "auth-callback.html")
+    return FileResponse(file_path, media_type="text/html")
+
 from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,

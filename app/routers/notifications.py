@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from ..services.notification_service import send_push_notification
-from ..deps import get_supabase_client
+from ..deps import service_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -23,14 +23,13 @@ class TestNotificationRequest(BaseModel):
     body: str = "Ceci est un test depuis le backend !"
 
 @router.post("/send")
-async def send_notification_to_user(
-    request: SendNotificationRequest,
-    supabase = Depends(get_supabase_client)
-):
+async def send_notification_to_user(request: SendNotificationRequest):
     """
     Envoie une notification push à un utilisateur spécifique
     """
     try:
+        supabase = service_client()
+        
         # Récupérer le token de l'utilisateur
         response = supabase.table("Users").select("notification_token, notification_enabled").eq("id", request.user_id).single().execute()
         

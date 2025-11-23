@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from app.routers import classement
 from app.routers import stats 
+from .routers import notifications
 
 from fastapi.responses import FileResponse
 import os
@@ -84,5 +85,6 @@ app.include_router(observations.router)
 app.include_router(pixel.router)
 app.include_router(classement.router)
 app.include_router(stats.router)
+app.include_router(notifications.router)
 
 

@@ -3,7 +3,7 @@ from .routers import parcours, suivi
 from .routers import sessions  
 from .routers import progression 
 from .routers import exercices
-from .routers import users  # importer
+from .routers import users
 from app.routers import observations
 from app.routers import pixel
 from dotenv import load_dotenv
@@ -11,22 +11,48 @@ load_dotenv()
 from app.routers import classement
 from app.routers import stats 
 from .routers import notifications
+from .routers import notification_settings  # ← NOUVEAU
 
 from fastapi.responses import FileResponse
 import os
 
-app = FastAPI(title="Pixel API", version="0.1.0")
+# ← NOUVEAU : Import pour le scheduler
+from contextlib import asynccontextmanager
+from app.cron.scheduler import init_scheduler, shutdown_scheduler
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ← NOUVEAU : Lifespan pour démarrer/arrêter le scheduler
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("🚀 Démarrage de l'application...")
+    init_scheduler()  # Démarrer les cron jobs
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Arrêt de l'application...")
+    shutdown_scheduler()  # Arrêter les cron jobs
+
+
+# ← MODIFIÉ : Ajouter lifespan à FastAPI
+app = FastAPI(
+    title="Pixel API", 
+    version="0.1.0",
+    lifespan=lifespan  # ← NOUVEAU
+)
 
 APP_DEBUG_VERSION = "debug-headers-v1"
 
 @app.get("/_version")
 def _version():
-    # Permet de vérifier que le nouveau code est bien en ligne
     return {"ok": True, "version": APP_DEBUG_VERSION}
 
 @app.get("/_echo")
 def _echo(request: Request):
-    # Renvoie les headers reçus (pour voir s'il y a bien Authorization)
     return {
         "ok": True,
         "headers": dict(request.headers),
@@ -47,7 +73,6 @@ def health():
 @app.get("/__routes")
 def list_routes():
     return [getattr(r, "path", None) for r in app.router.routes]
-
 
 @app.get("/reset-password")
 def reset_password_page():
@@ -86,5 +111,4 @@ app.include_router(pixel.router)
 app.include_router(classement.router)
 app.include_router(stats.router)
 app.include_router(notifications.router)
-
-
+app.include_router(notification_settings.router)  # ← NOUVEAU

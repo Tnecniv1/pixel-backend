@@ -70,3 +70,24 @@ def resolve_display_names_post(body: ResolveIdsIn):
     data = getattr(q, "data", []) or []
     out = [{"id": int(r["id"]), "name": r.get("name") or ""} for r in data if "id" in r]
     return {"users": out}
+
+    
+@router.get("/debug/get-token")  # ← Change POST en GET
+async def debug_get_token(email: str, password: str):
+    """Endpoint temporaire pour récupérer un token"""
+    from ..deps import service_client
+    supabase = service_client()
+    
+    try:
+        response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        return {
+            "access_token": response.session.access_token,
+            "user_id": response.user.id
+        }
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail=f"Erreur connexion: {str(e)}")

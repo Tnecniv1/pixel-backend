@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
-from ..services.notification_service import send_push_notification
+from typing import Optional, Dict, Any, List
+from ..services.notification_service import send_push_notification, send_push_notifications_bulk
 from ..deps import service_client
 import logging
 
@@ -21,6 +21,12 @@ class TestNotificationRequest(BaseModel):
     expo_token: str
     title: str = "🔔 Test Notification"
     body: str = "Ceci est un test depuis le backend !"
+
+class ChatMessageNotificationRequest(BaseModel):
+    sender_id: int
+    sender_name: str
+    message_content: str
+    message_id: Optional[str] = None
 
 @router.post("/send")
 async def send_notification_to_user(request: SendNotificationRequest):
@@ -79,12 +85,78 @@ async def test_notification(request: TestNotificationRequest):
             body=request.body,
             data={"type": "test"}
         )
-        
+
         if success:
             return {"success": True, "message": "Notification de test envoyée"}
         else:
             raise HTTPException(status_code=500, detail="Erreur lors de l'envoi")
-            
+
     except Exception as e:
         logger.error(f"Erreur test_notification: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat-message")
+async def notify_chat_message(request: ChatMessageNotificationRequest):
+    """
+    Envoie une notification push a tous les utilisateurs (sauf l'expediteur)
+    quand un nouveau message est poste dans le chat global.
+    """
+    try:
+        supabase = service_client()
+
+        # Recuperer tous les utilisateurs avec notifications activees (sauf l'expediteur)
+        response = supabase.table("Users").select(
+            "id, notification_token, notification_enabled"
+        ).neq("id", request.sender_id).execute()
+
+        if not response.data:
+            logger.info("[ChatNotif] Aucun utilisateur a notifier")
+            return {"success": True, "notified": 0, "message": "Aucun utilisateur"}
+
+        # Filtrer les utilisateurs avec notifications activees et token valide
+        users_to_notify = [
+            user for user in response.data
+            if user.get("notification_enabled", False)
+            and user.get("notification_token")
+            and user["notification_token"].startswith("ExponentPushToken")
+        ]
+
+        if not users_to_notify:
+            logger.info("[ChatNotif] Aucun utilisateur avec notifications activees")
+            return {"success": True, "notified": 0, "message": "Aucun token valide"}
+
+        # Preparer le contenu de la notification
+        content_preview = request.message_content[:100] + "..." if len(request.message_content) > 100 else request.message_content
+
+        # Preparer les messages en bulk
+        messages = [
+            {
+                "token": user["notification_token"],
+                "title": f"💬 {request.sender_name}",
+                "body": content_preview,
+                "data": {
+                    "type": "chat_message",
+                    "sender_id": request.sender_id,
+                    "sender_name": request.sender_name,
+                    "message_id": request.message_id
+                }
+            }
+            for user in users_to_notify
+        ]
+
+        # Envoyer en batch
+        result = await send_push_notifications_bulk(messages)
+
+        logger.info(f"[ChatNotif] Envoye: {result['success']} succes, {result['failed']} echecs sur {len(users_to_notify)} utilisateurs")
+
+        return {
+            "success": True,
+            "notified": result["success"],
+            "failed": result["failed"],
+            "total_eligible": len(users_to_notify)
+        }
+
+    except Exception as e:
+        logger.error(f"[ChatNotif] Erreur: {e}")
         raise HTTPException(status_code=500, detail=str(e))

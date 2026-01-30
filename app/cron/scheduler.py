@@ -35,9 +35,8 @@ def init_scheduler():
     
     # Import des tâches
     from .daily_reminder import send_daily_reminders
-    from .morning_quote import send_morning_quotes
     from .ranking_checker import check_rankings
-    
+
     # 1) Rappels quotidiens - 20:00 heure de Paris
     scheduler.add_job(
         send_daily_reminders,
@@ -47,18 +46,10 @@ def init_scheduler():
         replace_existing=True
     )
     logger.info("[Scheduler] ✓ Rappels quotidiens programmés (20:00 Paris)")
-    
-    # 2) Phrases du matin - 08:00 heure de Paris
-    scheduler.add_job(
-        send_morning_quotes,
-        CronTrigger(hour=8, minute=0, timezone=PARIS_TZ),
-        id='morning_quote',
-        name='Phrases du matin',
-        replace_existing=True
-    )
-    logger.info("[Scheduler] ✓ Phrases du matin programmées (08:00 Paris)")
-    
-    # 3) Vérification des classements - Toutes les 30 minutes
+
+    # NOTE: Notifications du matin (morning_quote) désactivées
+
+    # 2) Vérification des classements - Toutes les 30 minutes
     scheduler.add_job(
         check_rankings,
         CronTrigger(minute='*/30', timezone=PARIS_TZ),

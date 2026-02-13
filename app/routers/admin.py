@@ -104,7 +104,7 @@ def analytics_overview(
 
     try:
         # Total users
-        total_users_res = sb.table("users_map").select("user_id", count="exact", head=True).execute()
+        total_users_res = sb.table("users_map").select("user_id", count="exact").limit(0).execute()
         total_users = total_users_res.count or 0
 
         # Entrainements sur la période → nombre d'opérations (observations)
@@ -120,7 +120,7 @@ def analytics_overview(
 
         total_operations = 0
         if ent_ids:
-            obs_res = sb.table("Observations").select("id", count="exact", head=True).in_("Entrainement_Id", ent_ids).execute()
+            obs_res = sb.table("Observations").select("id", count="exact").in_("Entrainement_Id", ent_ids).limit(0).execute()
             total_operations = obs_res.count or 0
 
         # Utilisateurs actifs (au moins 1 entrainement sur la période)
@@ -374,7 +374,7 @@ def analytics_conversion_funnel(
         # users_map n'a pas de created_at, on utilise la table auth.users via Users
         # On ne peut pas accéder à auth.users directement, on utilise users_map
         # Fallback : compter tous les users si pas de dates
-        q = sb.table("users_map").select("user_id", count="exact", head=True)
+        q = sb.table("users_map").select("user_id", count="exact").limit(0)
         if start_date:
             # users_map n'a pas created_at → on utilise l'id comme proxy
             # Meilleure approche : vérifier si created_at existe

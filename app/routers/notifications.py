@@ -105,6 +105,15 @@ async def notify_chat_message(request: ChatMessageNotificationRequest):
     try:
         supabase = service_client()
 
+        # Recuperer le token de l'expediteur pour l'exclure par token (pas seulement par ID)
+        sender_response = supabase.table("Users").select(
+            "notification_token"
+        ).eq("id", request.sender_id).single().execute()
+
+        sender_token = None
+        if sender_response.data:
+            sender_token = sender_response.data.get("notification_token")
+
         # Recuperer tous les utilisateurs avec notifications activees (sauf l'expediteur)
         response = supabase.table("Users").select(
             "id, notification_token, notification_enabled"
@@ -115,21 +124,32 @@ async def notify_chat_message(request: ChatMessageNotificationRequest):
             return {"success": True, "notified": 0, "message": "Aucun utilisateur"}
 
         # Filtrer les utilisateurs avec notifications activees et token valide
+        # + exclure le token de l'expediteur (corrige l'auto-notification)
         users_to_notify = [
             user for user in response.data
             if user.get("notification_enabled", False)
             and user.get("notification_token")
             and user["notification_token"].startswith("ExponentPushToken")
+            and user["notification_token"] != sender_token
         ]
 
         if not users_to_notify:
             logger.info("[ChatNotif] Aucun utilisateur avec notifications activees")
             return {"success": True, "notified": 0, "message": "Aucun token valide"}
 
+        # Dedupliquer par token (evite les notifications en double sur un meme appareil)
+        seen_tokens = set()
+        unique_users = []
+        for user in users_to_notify:
+            token = user["notification_token"]
+            if token not in seen_tokens:
+                seen_tokens.add(token)
+                unique_users.append(user)
+
         # Preparer le contenu de la notification
         content_preview = request.message_content[:100] + "..." if len(request.message_content) > 100 else request.message_content
 
-        # Preparer les messages en bulk
+        # Preparer les messages en bulk (un seul par token unique)
         messages = [
             {
                 "token": user["notification_token"],
@@ -142,7 +162,7 @@ async def notify_chat_message(request: ChatMessageNotificationRequest):
                     "message_id": request.message_id
                 }
             }
-            for user in users_to_notify
+            for user in unique_users
         ]
 
         # Envoyer en batch

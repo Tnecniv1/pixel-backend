@@ -113,4 +113,5 @@ app.include_router(classement.router)
 app.include_router(stats.router)
 app.include_router(notifications.router)
 app.include_router(notification_settings.router)  # ← NOUVEAU
+app.include_router(admin.login_router)
 app.include_router(admin.router)

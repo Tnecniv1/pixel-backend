@@ -4,13 +4,46 @@ Endpoints analytics pour le dashboard admin.
 Protection : chaque endpoint vérifie is_admin via users_map.
 """
 
+import os
 from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from jose import jwt as jose_jwt
 from pydantic import BaseModel
 
 from app.deps import get_auth_uid_from_bearer, service_client
+
+ADMIN_PASSWORD = os.getenv("ADMIN_DASHBOARD_PASSWORD", "pixel_admin_2024")
+JWT_SECRET = os.getenv("JWT_SECRET", os.getenv("SUPABASE_SERVICE_ROLE_KEY", "fallback-secret"))
+JWT_ALGORITHM = "HS256"
+
+# ---------------------------------------------------------------------------
+# Router login (prefix /admin)
+# ---------------------------------------------------------------------------
+
+login_router = APIRouter(prefix="/admin", tags=["admin-auth"])
+
+
+class AdminLoginBody(BaseModel):
+    password: str
+
+
+@login_router.post("/login")
+def admin_login(body: AdminLoginBody):
+    if body.password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Mot de passe incorrect")
+    payload = {
+        "is_admin": True,
+        "exp": datetime.utcnow() + timedelta(hours=24),
+    }
+    token = jose_jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return {"access_token": token}
+
+
+# ---------------------------------------------------------------------------
+# Router analytics (prefix /admin/analytics)
+# ---------------------------------------------------------------------------
 
 router = APIRouter(prefix="/admin/analytics", tags=["admin-analytics"])
 
@@ -19,6 +52,19 @@ router = APIRouter(prefix="/admin/analytics", tags=["admin-analytics"])
 # ---------------------------------------------------------------------------
 
 def _require_admin(authorization: Optional[str]) -> None:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Token manquant ou invalide")
+
+    # 1) Essayer le JWT dashboard (is_admin custom token)
+    token = authorization.split(" ", 1)[1] if " " in authorization else authorization
+    try:
+        payload = jose_jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("is_admin"):
+            return  # OK — admin dashboard token
+    except Exception:
+        pass
+
+    # 2) Fallback : JWT Supabase + vérification users_map
     auth_uid = get_auth_uid_from_bearer(authorization)
     if not auth_uid:
         raise HTTPException(status_code=401, detail="Token manquant ou invalide")

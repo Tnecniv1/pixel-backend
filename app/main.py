@@ -12,6 +12,7 @@ from app.routers import classement
 from app.routers import stats 
 from .routers import notifications
 from .routers import notification_settings  # ← NOUVEAU
+from .routers import admin
 
 from fastapi.responses import FileResponse
 import os
@@ -112,3 +113,4 @@ app.include_router(classement.router)
 app.include_router(stats.router)
 app.include_router(notifications.router)
 app.include_router(notification_settings.router)  # ← NOUVEAU
+app.include_router(admin.router)

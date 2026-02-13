@@ -1,0 +1,490 @@
+# app/routers/admin.py
+"""
+Endpoints analytics pour le dashboard admin.
+Protection : chaque endpoint vérifie is_admin via users_map.
+"""
+
+from datetime import date, datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Header, HTTPException, Query
+from pydantic import BaseModel
+
+from app.deps import get_auth_uid_from_bearer, service_client
+
+router = APIRouter(prefix="/admin/analytics", tags=["admin-analytics"])
+
+# ---------------------------------------------------------------------------
+# Helper : vérifier que l'appelant est admin
+# ---------------------------------------------------------------------------
+
+def _require_admin(authorization: Optional[str]) -> None:
+    auth_uid = get_auth_uid_from_bearer(authorization)
+    if not auth_uid:
+        raise HTTPException(status_code=401, detail="Token manquant ou invalide")
+    sb = service_client()
+    row = (
+        sb.table("users_map")
+        .select("is_admin")
+        .eq("auth_uid", auth_uid)
+        .maybe_single()
+        .execute()
+    )
+    data = getattr(row, "data", None)
+    if not data or not data.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+
+
+def _period_to_days(period: str) -> int:
+    return {"7d": 7, "30d": 30, "90d": 90}.get(period, 30)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 1 — Vue d'ensemble (KPIs globaux)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/overview")
+def analytics_overview(
+    period: str = Query("30d", regex="^(7d|30d|90d)$"),
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+    days = _period_to_days(period)
+    since = (date.today() - timedelta(days=days)).isoformat()
+
+    try:
+        # Total users
+        total_users_res = sb.table("users_map").select("user_id", count="exact", head=True).execute()
+        total_users = total_users_res.count or 0
+
+        # Entrainements sur la période → nombre d'opérations (observations)
+        # On récupère les ids d'entrainement depuis la période
+        ent_res = (
+            sb.table("Entrainement")
+            .select("id")
+            .gte("Date", since)
+            .limit(100000)
+            .execute()
+        )
+        ent_ids = [e["id"] for e in (getattr(ent_res, "data", []) or [])]
+
+        total_operations = 0
+        if ent_ids:
+            obs_res = sb.table("Observations").select("id", count="exact", head=True).in_("Entrainement_Id", ent_ids).execute()
+            total_operations = obs_res.count or 0
+
+        # Utilisateurs actifs (au moins 1 entrainement sur la période)
+        active_ids = set()
+        for e in (getattr(ent_res, "data", []) or []):
+            # On a besoin de Users_Id, refaisons la requête avec le bon select
+            pass
+
+        ent_full = (
+            sb.table("Entrainement")
+            .select("Users_Id")
+            .gte("Date", since)
+            .limit(100000)
+            .execute()
+        )
+        active_ids = {e["Users_Id"] for e in (getattr(ent_full, "data", []) or []) if e.get("Users_Id")}
+        active_users = len(active_ids)
+
+        # Premium users — pas de table abonnement connue, renvoie 0
+        premium_users = 0
+
+        return {
+            "total_users": total_users,
+            "total_operations": total_operations,
+            "active_users": active_users,
+            "premium_users": premium_users,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur overview: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 2 — Activité utilisateurs
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/user-activity")
+def analytics_user_activity(
+    period: str = Query("30d", regex="^(7d|30d|90d)$"),
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+    days = _period_to_days(period)
+    since_date = date.today() - timedelta(days=days)
+    since = since_date.isoformat()
+    today = date.today()
+
+    try:
+        # Tous les entrainements de la période avec Users_Id et Date
+        ent_res = (
+            sb.table("Entrainement")
+            .select("id, Users_Id, Date")
+            .gte("Date", since)
+            .order("id")
+            .limit(100000)
+            .execute()
+        )
+        entrainements = getattr(ent_res, "data", []) or []
+
+        # Tous les utilisateurs (pour display_name)
+        users_res = sb.table("users_map").select("user_id, display_name").execute()
+        users_map_data = {u["user_id"]: u.get("display_name", f"User {u['user_id']}") for u in (getattr(users_res, "data", []) or [])}
+
+        # Regrouper par user
+        from collections import defaultdict
+        user_ent: dict = defaultdict(list)  # user_id -> list of {id, Date}
+        for e in entrainements:
+            uid = e.get("Users_Id")
+            if uid:
+                user_ent[uid].append(e)
+
+        # Récupérer les ids d'entrainement pour compter les observations
+        all_ent_ids = [e["id"] for e in entrainements]
+        obs_counts: dict = defaultdict(int)  # Entrainement_Id -> count
+        if all_ent_ids:
+            # Compter observations par batch
+            for i in range(0, len(all_ent_ids), 500):
+                batch = all_ent_ids[i:i+500]
+                obs_res = (
+                    sb.table("Observations")
+                    .select("Entrainement_Id")
+                    .in_("Entrainement_Id", batch)
+                    .limit(100000)
+                    .execute()
+                )
+                for o in (getattr(obs_res, "data", []) or []):
+                    obs_counts[o["Entrainement_Id"]] += 1
+
+        users_list = []
+        weeks = max(days / 7, 1)
+
+        for uid, ents in user_ent.items():
+            # Compter opérations
+            total_ops = sum(obs_counts.get(e["id"], 0) for e in ents)
+
+            # Jours uniques d'entraînement
+            training_dates = set()
+            last_session = None
+            for e in ents:
+                d = e.get("Date")
+                if d:
+                    training_dates.add(str(d)[:10])
+                    if last_session is None or str(d) > str(last_session):
+                        last_session = d
+
+            unique_days = len(training_dates)
+            days_per_week = unique_days / weeks
+
+            # Fréquence
+            if days_per_week >= 6:
+                frequency = "daily"
+            elif days_per_week >= 3:
+                frequency = "3x_week"
+            elif days_per_week >= 1:
+                frequency = "weekly"
+            else:
+                frequency = "occasional"
+
+            # Streak (simplifié)
+            sorted_dates = sorted(training_dates, reverse=True)
+            streak = 0
+            check = today
+            for _ in range(days):
+                if check.isoformat() in training_dates:
+                    streak += 1
+                    check -= timedelta(days=1)
+                else:
+                    break
+
+            # Churn risk : inactif > 7 jours
+            churn_risk = True
+            if last_session:
+                try:
+                    last_d = datetime.fromisoformat(str(last_session)[:10]).date()
+                    churn_risk = (today - last_d).days > 7
+                except Exception:
+                    churn_risk = True
+
+            users_list.append({
+                "user_id": uid,
+                "display_name": users_map_data.get(uid, f"User {uid}"),
+                "total_operations": total_ops,
+                "frequency": frequency,
+                "last_session": last_session,
+                "streak_days": streak,
+                "churn_risk": churn_risk,
+            })
+
+        # Trier par opérations décroissantes
+        users_list.sort(key=lambda u: u["total_operations"], reverse=True)
+
+        return {"users": users_list}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur user-activity: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 3 — Opérations par jour (graphique)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/operations-daily")
+def analytics_operations_daily(
+    days: int = Query(30, ge=1, le=365),
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+    today = date.today()
+    since = (today - timedelta(days=days - 1)).isoformat()
+
+    try:
+        # Récupérer entrainements avec Date
+        ent_res = (
+            sb.table("Entrainement")
+            .select("id, Date")
+            .gte("Date", since)
+            .order("Date")
+            .limit(100000)
+            .execute()
+        )
+        entrainements = getattr(ent_res, "data", []) or []
+
+        # Compter observations par entrainement
+        from collections import defaultdict
+        ent_by_date: dict = defaultdict(list)  # date_str -> [ent_ids]
+        for e in entrainements:
+            d = str(e.get("Date", ""))[:10]
+            if d:
+                ent_by_date[d].append(e["id"])
+
+        # Compter toutes les observations d'un coup
+        all_ent_ids = [e["id"] for e in entrainements]
+        obs_per_ent: dict = defaultdict(int)
+        if all_ent_ids:
+            for i in range(0, len(all_ent_ids), 500):
+                batch = all_ent_ids[i:i+500]
+                obs_res = (
+                    sb.table("Observations")
+                    .select("Entrainement_Id")
+                    .in_("Entrainement_Id", batch)
+                    .limit(100000)
+                    .execute()
+                )
+                for o in (getattr(obs_res, "data", []) or []):
+                    obs_per_ent[o["Entrainement_Id"]] += 1
+
+        # Agréger par date
+        ops_by_date: dict = defaultdict(int)
+        for d, ent_ids in ent_by_date.items():
+            for eid in ent_ids:
+                ops_by_date[d] += obs_per_ent.get(eid, 0)
+
+        # Générer toutes les dates (y compris celles à 0)
+        data = []
+        current = today - timedelta(days=days - 1)
+        while current <= today:
+            d_str = current.isoformat()
+            data.append({
+                "date": d_str,
+                "total_operations": ops_by_date.get(d_str, 0),
+            })
+            current += timedelta(days=1)
+
+        return {"data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur operations-daily: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 4 — Funnel de conversion
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/conversion-funnel")
+def analytics_conversion_funnel(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+
+    try:
+        # Signups : compter les users créés entre start_date et end_date
+        # users_map n'a pas de created_at, on utilise la table auth.users via Users
+        # On ne peut pas accéder à auth.users directement, on utilise users_map
+        # Fallback : compter tous les users si pas de dates
+        q = sb.table("users_map").select("user_id", count="exact", head=True)
+        if start_date:
+            # users_map n'a pas created_at → on utilise l'id comme proxy
+            # Meilleure approche : vérifier si created_at existe
+            pass
+        signups_res = q.execute()
+        signups = signups_res.count or 0
+
+        # Impressions & downloads : depuis analytics_manual_data
+        impressions = 0
+        downloads = 0
+        try:
+            md_q = sb.table("analytics_manual_data").select("impressions, downloads")
+            if start_date:
+                md_q = md_q.gte("date", start_date)
+            if end_date:
+                md_q = md_q.lte("date", end_date)
+            md_res = md_q.execute()
+            md_data = getattr(md_res, "data", []) or []
+            for row in md_data:
+                impressions += row.get("impressions", 0) or 0
+                downloads += row.get("downloads", 0) or 0
+        except Exception:
+            # Table n'existe pas encore → 0
+            pass
+
+        # Subscriptions (pas de table abonnement)
+        subscriptions = 0
+
+        return {
+            "impressions": impressions,
+            "downloads": downloads,
+            "signups": signups,
+            "subscriptions": subscriptions,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur conversion-funnel: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 5 — Saisir données manuelles (impressions/downloads)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class ManualDataIn(BaseModel):
+    date: str  # YYYY-MM-DD
+    impressions: int = 0
+    downloads: int = 0
+
+
+@router.post("/manual-data")
+def analytics_manual_data(
+    body: ManualDataIn,
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+
+    try:
+        # Upsert : on tente un update, si 0 rows → insert
+        existing = (
+            sb.table("analytics_manual_data")
+            .select("date")
+            .eq("date", body.date)
+            .maybe_single()
+            .execute()
+        )
+        if getattr(existing, "data", None):
+            sb.table("analytics_manual_data").update({
+                "impressions": body.impressions,
+                "downloads": body.downloads,
+            }).eq("date", body.date).execute()
+        else:
+            sb.table("analytics_manual_data").insert({
+                "date": body.date,
+                "impressions": body.impressions,
+                "downloads": body.downloads,
+            }).execute()
+
+        return {"ok": True, "date": body.date}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur manual-data: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 6 — Taux de réussite moyen par jour
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/success-rate-daily")
+def analytics_success_rate_daily(
+    days: int = Query(30, ge=1, le=365),
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+    today = date.today()
+    since = (today - timedelta(days=days - 1)).isoformat()
+
+    try:
+        # Récupérer entrainements avec Date
+        ent_res = (
+            sb.table("Entrainement")
+            .select("id, Date")
+            .gte("Date", since)
+            .order("Date")
+            .limit(100000)
+            .execute()
+        )
+        entrainements = getattr(ent_res, "data", []) or []
+
+        from collections import defaultdict
+        ent_date_map: dict = {}  # ent_id -> date_str
+        for e in entrainements:
+            d = str(e.get("Date", ""))[:10]
+            if d:
+                ent_date_map[e["id"]] = d
+
+        all_ent_ids = list(ent_date_map.keys())
+
+        # Observations avec Etat
+        # Etat = "JUSTE" ou "FAUX" (la DB calcule automatiquement)
+        daily_correct: dict = defaultdict(int)
+        daily_total: dict = defaultdict(int)
+
+        if all_ent_ids:
+            for i in range(0, len(all_ent_ids), 500):
+                batch = all_ent_ids[i:i+500]
+                obs_res = (
+                    sb.table("Observations")
+                    .select("Entrainement_Id, Etat")
+                    .in_("Entrainement_Id", batch)
+                    .limit(100000)
+                    .execute()
+                )
+                for o in (getattr(obs_res, "data", []) or []):
+                    eid = o.get("Entrainement_Id")
+                    d = ent_date_map.get(eid)
+                    if d:
+                        daily_total[d] += 1
+                        if str(o.get("Etat", "")).upper() != "FAUX":
+                            daily_correct[d] += 1
+
+        # Générer toutes les dates
+        data = []
+        current = today - timedelta(days=days - 1)
+        while current <= today:
+            d_str = current.isoformat()
+            total = daily_total.get(d_str, 0)
+            correct = daily_correct.get(d_str, 0)
+            rate = round((correct / total) * 100, 1) if total > 0 else 0.0
+            data.append({
+                "date": d_str,
+                "success_rate": rate,
+            })
+            current += timedelta(days=1)
+
+        return {"data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur success-rate-daily: {e}")

@@ -4,9 +4,12 @@ Endpoints analytics pour le dashboard admin.
 Protection : chaque endpoint vérifie is_admin via users_map.
 """
 
+import logging
 import os
 from datetime import date, datetime, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from jose import jwt as jose_jwt
@@ -148,7 +151,8 @@ def analytics_overview(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur overview: {e}")
+        logger.error("[ADMIN ANALYTICS] Error in overview: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -408,7 +412,8 @@ def analytics_conversion_funnel(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur conversion-funnel: {e}")
+        logger.error("[ADMIN ANALYTICS] Error in conversion-funnel: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -617,29 +617,39 @@ def analytics_user_regularity_matrix(
             total_active_days = len(dates_set)
             total_index = round(total_active_days / total_span, 2)
 
-            # Statistiques par utilisateur
-            indices = [day_index, week_index, month_index, total_index]
-            moyenne = round(sum(indices) / 4, 2)
-            variance = sum((x - moyenne) ** 2 for x in indices) / 4
-            volatilite = round(variance ** 0.5, 2)
-            stabilite = round(1 - volatilite, 2)
+            # Statistiques sur les 30 derniers jours
+            ops_30d = []
+            for i in range(30):
+                d_str = (today - timedelta(days=i)).isoformat()
+                ops_30d.append(ops_by_date.get(d_str, 0))
 
-            # Score global pondéré pour le tri
-            score_global = round(
-                (day_index * 0.1) + (week_index * 0.3) + (month_index * 0.3) + (total_index * 0.3),
-                2,
-            )
+            total_30d = sum(ops_30d)
+            moyenne_30d = round(total_30d / 30, 1)
 
-            all_indices.append(moyenne)
+            # Volatilité (écart-type)
+            variance_30d = sum((x - moyenne_30d) ** 2 for x in ops_30d) / 30
+            volatilite_30d = round(variance_30d ** 0.5, 1)
+
+            # Tendance : jours 0-14 (récents) vs jours 15-29 (anciens)
+            moitie_recente = sum(ops_30d[:15])
+            moitie_ancienne = sum(ops_30d[15:])
+            if moitie_ancienne > 0:
+                tendance_pct = ((moitie_recente - moitie_ancienne) / moitie_ancienne) * 100
+            else:
+                tendance_pct = 0.0 if moitie_recente == 0 else 100.0
+            tendance_str = f"{tendance_pct:+.0f}%"
+
+            all_indices.append(moyenne_30d)
 
             users_list.append({
                 "user_id": uid,
                 "display_name": display_names.get(uid, f"User {uid}"),
-                "score_global": score_global,
-                "statistics": {
-                    "moyenne": moyenne,
-                    "volatilite": volatilite,
-                    "stabilite": stabilite,
+                "statistics_30d": {
+                    "moyenne": moyenne_30d,
+                    "volatilite": volatilite_30d,
+                    "tendance": tendance_str,
+                    "tendance_pct": round(tendance_pct, 1),
+                    "total_operations": total_30d,
                 },
                 "day": {
                     "index": day_index,
@@ -667,13 +677,15 @@ def analytics_user_regularity_matrix(
                 },
             })
 
-        # Trier par score_global DESC (meilleurs en premier)
-        users_list.sort(key=lambda u: u["score_global"], reverse=True)
+        # Trier par tendance DESC, puis par moyenne DESC
+        users_list.sort(
+            key=lambda u: (u["statistics_30d"]["tendance_pct"], u["statistics_30d"]["moyenne"]),
+            reverse=True,
+        )
 
-        # global_regularity : moyenne des indices moyens (variance inversée simplifiée)
+        # global_regularity : moyenne des moyennes quotidiennes
         if all_indices:
-            mean_idx = sum(all_indices) / len(all_indices)
-            global_regularity = round(mean_idx, 2)
+            global_regularity = round(sum(all_indices) / len(all_indices), 2)
         else:
             global_regularity = 0.0
 

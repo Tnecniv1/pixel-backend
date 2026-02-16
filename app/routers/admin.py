@@ -370,23 +370,24 @@ def analytics_operations_daily_activity(
     try:
         from collections import defaultdict
 
-        # Récupérer TOUS les entrainements avec leur Date (sans filtre de période)
-        all_entrainements = []
-        offset = 0
-        batch_size = 10000
-        while True:
+        today = date.today()
+
+        # Récupérer les entrainements
+        if days is not None:
+            cutoff_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
             ent_res = (
                 sb.table("Entrainement")
                 .select("id, Date")
-                .order("Date")
-                .range(offset, offset + batch_size - 1)
+                .gte("Date", cutoff_date)
                 .execute()
             )
-            batch = getattr(ent_res, "data", []) or []
-            all_entrainements.extend(batch)
-            if len(batch) < batch_size:
-                break
-            offset += batch_size
+        else:
+            ent_res = (
+                sb.table("Entrainement")
+                .select("id, Date")
+                .execute()
+            )
+        all_entrainements = getattr(ent_res, "data", []) or []
 
         # Map entrainement_id -> date
         ent_date_map: dict = {}
@@ -406,7 +407,6 @@ def analytics_operations_daily_activity(
                     sb.table("Observations")
                     .select("Entrainement_Id")
                     .in_("Entrainement_Id", batch)
-                    .limit(100000)
                     .execute()
                 )
                 for o in (getattr(obs_res, "data", []) or []):
@@ -414,8 +414,6 @@ def analytics_operations_daily_activity(
                     d = ent_date_map.get(eid)
                     if d:
                         ops_by_date[d] += 1
-
-        today = date.today()
 
         # Déterminer la date de début
         if days is not None:
@@ -436,6 +434,10 @@ def analytics_operations_daily_activity(
                 "operations": ops_by_date.get(d_str, 0),
             })
             current += timedelta(days=1)
+
+        min_date = data[0]["date"] if data else "N/A"
+        max_date = data[-1]["date"] if data else "N/A"
+        logger.info(f"[ACTIVITY DEBUG] Date range: {min_date} to {max_date}, Total days: {len(data)}, Entrainements fetched: {len(all_entrainements)}")
 
         return {"data": data}
     except HTTPException:

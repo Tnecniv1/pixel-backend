@@ -388,9 +388,17 @@ def analytics_conversion_funnel(
             # Table n'existe pas encore → 0
             pass
 
-        # Compter les users ayant au moins 1 entrainement
-        training_users = sb.table("Entrainement").select("Users_Id").execute()
-        unique_users_with_training = len(set([t["Users_Id"] for t in (getattr(training_users, "data", []) or []) if t.get("Users_Id")]))
+        # Compter users ayant au moins 1 entrainement
+        training_res = sb.table("Entrainement").select("Users_Id").execute()
+
+        if training_res.data:
+            # Filtrer les None et compter les uniques
+            user_ids = [t["Users_Id"] for t in training_res.data if t.get("Users_Id") is not None]
+            users_with_training = len(set(user_ids))
+        else:
+            users_with_training = 0
+
+        logger.info(f"[FUNNEL DEBUG] Training entries: {len(training_res.data) if training_res.data else 0}, Unique users: {users_with_training}")
 
         # Subscriptions (pas de table abonnement)
         subscriptions = 0
@@ -398,7 +406,7 @@ def analytics_conversion_funnel(
         return {
             "impressions": impressions,
             "downloads": downloads,
-            "users_with_training": unique_users_with_training,
+            "users_with_training": users_with_training,
             "subscriptions": subscriptions,
         }
     except HTTPException:

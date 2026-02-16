@@ -617,12 +617,30 @@ def analytics_user_regularity_matrix(
             total_active_days = len(dates_set)
             total_index = round(total_active_days / total_span, 2)
 
-            avg_index = round((day_index + week_index + month_index + total_index) / 4, 2)
-            all_indices.append(avg_index)
+            # Statistiques par utilisateur
+            indices = [day_index, week_index, month_index, total_index]
+            moyenne = round(sum(indices) / 4, 2)
+            variance = sum((x - moyenne) ** 2 for x in indices) / 4
+            volatilite = round(variance ** 0.5, 2)
+            stabilite = round(1 - volatilite, 2)
+
+            # Score global pondéré pour le tri
+            score_global = round(
+                (day_index * 0.1) + (week_index * 0.3) + (month_index * 0.3) + (total_index * 0.3),
+                2,
+            )
+
+            all_indices.append(moyenne)
 
             users_list.append({
                 "user_id": uid,
                 "display_name": display_names.get(uid, f"User {uid}"),
+                "score_global": score_global,
+                "statistics": {
+                    "moyenne": moyenne,
+                    "volatilite": volatilite,
+                    "stabilite": stabilite,
+                },
                 "day": {
                     "index": day_index,
                     "trend": _trend(ops_today, ops_yesterday),
@@ -649,8 +667,8 @@ def analytics_user_regularity_matrix(
                 },
             })
 
-        # Trier par activité totale DESC
-        users_list.sort(key=lambda u: u["total"]["operations_current"], reverse=True)
+        # Trier par score_global DESC (meilleurs en premier)
+        users_list.sort(key=lambda u: u["score_global"], reverse=True)
 
         # global_regularity : moyenne des indices moyens (variance inversée simplifiée)
         if all_indices:

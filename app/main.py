@@ -13,6 +13,7 @@ from app.routers import stats
 from .routers import notifications
 from .routers import notification_settings  # ← NOUVEAU
 from .routers import admin
+from .routers.webhooks import webhook_router
 
 from fastapi.responses import FileResponse
 import os
@@ -115,3 +116,4 @@ app.include_router(notifications.router)
 app.include_router(notification_settings.router)  # ← NOUVEAU
 app.include_router(admin.login_router)
 app.include_router(admin.router)
+app.include_router(webhook_router)

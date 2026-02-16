@@ -139,8 +139,9 @@ def analytics_overview(
         active_ids = {e["Users_Id"] for e in (getattr(ent_full, "data", []) or []) if e.get("Users_Id")}
         active_users = len(active_ids)
 
-        # Premium users — pas de table abonnement connue, renvoie 0
-        premium_users = 0
+        # Premium users (abonnés via RevenueCat)
+        premium_res = sb.table("users_map").select("user_id", count="exact").eq("is_subscribed", True).limit(0).execute()
+        premium_users = premium_res.count or 0
 
         return {
             "total_users": total_users,
@@ -400,8 +401,9 @@ def analytics_conversion_funnel(
 
         logger.info(f"[FUNNEL DEBUG] Training entries: {len(training_res.data) if training_res.data else 0}, Unique users: {users_with_training}")
 
-        # Subscriptions (pas de table abonnement)
-        subscriptions = 0
+        # Subscriptions (abonnés via RevenueCat)
+        sub_res = sb.table("users_map").select("user_id", count="exact").eq("is_subscribed", True).limit(0).execute()
+        subscriptions = sub_res.count or 0
 
         return {
             "impressions": impressions,

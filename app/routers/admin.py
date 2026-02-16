@@ -356,6 +356,96 @@ def analytics_operations_daily(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 3b — Opérations cumulatives (graphique all-time)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/operations-cumulative")
+def analytics_operations_cumulative(
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+
+    try:
+        from collections import defaultdict
+
+        # Récupérer TOUS les entrainements avec leur Date (sans filtre de période)
+        all_entrainements = []
+        offset = 0
+        batch_size = 10000
+        while True:
+            ent_res = (
+                sb.table("Entrainement")
+                .select("id, Date")
+                .order("Date")
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            batch = getattr(ent_res, "data", []) or []
+            all_entrainements.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
+        # Map entrainement_id -> date
+        ent_date_map: dict = {}
+        for e in all_entrainements:
+            d = str(e.get("Date", ""))[:10]
+            if d:
+                ent_date_map[e["id"]] = d
+
+        all_ent_ids = list(ent_date_map.keys())
+
+        # Compter les observations par date
+        ops_by_date: dict = defaultdict(int)
+        if all_ent_ids:
+            for i in range(0, len(all_ent_ids), 500):
+                batch = all_ent_ids[i:i + 500]
+                obs_res = (
+                    sb.table("Observations")
+                    .select("Entrainement_Id")
+                    .in_("Entrainement_Id", batch)
+                    .limit(100000)
+                    .execute()
+                )
+                for o in (getattr(obs_res, "data", []) or []):
+                    eid = o.get("Entrainement_Id")
+                    d = ent_date_map.get(eid)
+                    if d:
+                        ops_by_date[d] += 1
+
+        # Trier les dates et calculer le cumulatif
+        sorted_dates = sorted(ops_by_date.keys())
+        if not sorted_dates:
+            return {"data": []}
+
+        # Générer toutes les dates entre la première et aujourd'hui
+        first_date = date.fromisoformat(sorted_dates[0])
+        today = date.today()
+        data = []
+        cumulative = 0
+        day_number = 1
+        current = first_date
+        while current <= today:
+            d_str = current.isoformat()
+            cumulative += ops_by_date.get(d_str, 0)
+            data.append({
+                "day": day_number,
+                "date": d_str,
+                "total_operations": cumulative,
+            })
+            day_number += 1
+            current += timedelta(days=1)
+
+        logger.info(f"[CUMULATIVE DEBUG] {len(data)} days, final total: {cumulative}")
+        return {"data": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur operations-cumulative: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ENDPOINT 4 — Funnel de conversion
 # ═══════════════════════════════════════════════════════════════════════════
 

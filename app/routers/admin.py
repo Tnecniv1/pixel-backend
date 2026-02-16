@@ -356,11 +356,12 @@ def analytics_operations_daily(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ENDPOINT 3b — Opérations cumulatives (graphique all-time)
+# ENDPOINT 3b — Opérations par jour (non cumulé)
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/operations-cumulative")
-def analytics_operations_cumulative(
+def analytics_operations_daily_activity(
+    days: Optional[int] = Query(None, description="Nombre de jours (ex: 90). Si absent, toute la période."),
     authorization: Optional[str] = Header(default=None),
 ):
     _require_admin(authorization)
@@ -414,30 +415,28 @@ def analytics_operations_cumulative(
                     if d:
                         ops_by_date[d] += 1
 
-        # Trier les dates et calculer le cumulatif
-        sorted_dates = sorted(ops_by_date.keys())
-        if not sorted_dates:
-            return {"data": []}
-
-        # Générer toutes les dates entre la première et aujourd'hui
-        first_date = date.fromisoformat(sorted_dates[0])
         today = date.today()
+
+        # Déterminer la date de début
+        if days is not None:
+            first_date = today - timedelta(days=days - 1)
+        else:
+            sorted_dates = sorted(ops_by_date.keys())
+            if not sorted_dates:
+                return {"data": []}
+            first_date = date.fromisoformat(sorted_dates[0])
+
+        # Générer toutes les dates avec opérations par jour (non cumulé)
         data = []
-        cumulative = 0
-        day_number = 1
         current = first_date
         while current <= today:
             d_str = current.isoformat()
-            cumulative += ops_by_date.get(d_str, 0)
             data.append({
-                "day": day_number,
                 "date": d_str,
-                "total_operations": cumulative,
+                "operations": ops_by_date.get(d_str, 0),
             })
-            day_number += 1
             current += timedelta(days=1)
 
-        logger.info(f"[CUMULATIVE DEBUG] {len(data)} days, final total: {cumulative}")
         return {"data": data}
     except HTTPException:
         raise

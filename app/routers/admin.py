@@ -464,6 +464,215 @@ def analytics_operations_daily_activity(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ENDPOINT 3c — Matrice de régularité des utilisateurs
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/user-regularity-matrix")
+def analytics_user_regularity_matrix(
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_admin(authorization)
+    sb = service_client()
+
+    try:
+        from collections import defaultdict
+        import calendar
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        # --- Bornes temporelles ---
+        # Semaine actuelle (lundi = 0)
+        week_start = today - timedelta(days=today.weekday())
+        prev_week_start = week_start - timedelta(days=7)
+        prev_week_end = week_start - timedelta(days=1)
+
+        # Mois actuel
+        month_start = today.replace(day=1)
+        prev_month_last_day = month_start - timedelta(days=1)
+        prev_month_start = prev_month_last_day.replace(day=1)
+        days_in_current_month = calendar.monthrange(today.year, today.month)[1]
+        days_in_prev_month = calendar.monthrange(prev_month_last_day.year, prev_month_last_day.month)[1]
+
+        # --- Récupérer TOUS les entrainements (paginé) ---
+        all_entrainements = []
+        page_size = 1000
+        offset = 0
+        while True:
+            ent_res = (
+                sb.table("Entrainement")
+                .select("id, Users_Id, Date")
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page_data = getattr(ent_res, "data", []) or []
+            all_entrainements.extend(page_data)
+            if len(page_data) < page_size:
+                break
+            offset += page_size
+
+        if not all_entrainements:
+            return {"global_regularity": 0.0, "users": []}
+
+        # Map entrainement -> (user_id, date_str)
+        ent_info: dict = {}  # ent_id -> (user_id, date_str)
+        user_ent_ids: dict = defaultdict(list)  # user_id -> [ent_ids]
+        for e in all_entrainements:
+            uid = e.get("Users_Id")
+            d = str(e.get("Date", ""))[:10]
+            if uid and d:
+                ent_info[e["id"]] = (uid, d)
+                user_ent_ids[uid].append(e["id"])
+
+        all_ent_ids = list(ent_info.keys())
+
+        # --- Compter observations par entrainement (paginé) ---
+        obs_per_ent: dict = defaultdict(int)
+        if all_ent_ids:
+            for i in range(0, len(all_ent_ids), 500):
+                batch = all_ent_ids[i:i + 500]
+                obs_offset = 0
+                while True:
+                    obs_res = (
+                        sb.table("Observations")
+                        .select("Entrainement_Id")
+                        .in_("Entrainement_Id", batch)
+                        .order("id")
+                        .range(obs_offset, obs_offset + page_size - 1)
+                        .execute()
+                    )
+                    obs_data = getattr(obs_res, "data", []) or []
+                    for o in obs_data:
+                        obs_per_ent[o["Entrainement_Id"]] += 1
+                    if len(obs_data) < page_size:
+                        break
+                    obs_offset += page_size
+
+        # --- Construire les données par utilisateur ---
+        # user_id -> {dates: set, ops_by_date: {date_str: int}}
+        user_data: dict = defaultdict(lambda: {"dates": set(), "ops_by_date": defaultdict(int)})
+        for ent_id, (uid, d_str) in ent_info.items():
+            user_data[uid]["dates"].add(d_str)
+            user_data[uid]["ops_by_date"][d_str] += obs_per_ent.get(ent_id, 0)
+
+        # --- Display names ---
+        users_res = sb.table("users_map").select("user_id, display_name").execute()
+        display_names = {
+            u["user_id"]: u.get("display_name") or f"User {u['user_id']}"
+            for u in (getattr(users_res, "data", []) or [])
+        }
+
+        # --- Helper : compter ops et jours dans une plage ---
+        def _ops_and_days_in_range(ops_by_date, dates_set, start, end):
+            ops = 0
+            active_days = 0
+            current = start
+            while current <= end:
+                d_str = current.isoformat()
+                if d_str in dates_set:
+                    active_days += 1
+                ops += ops_by_date.get(d_str, 0)
+                current += timedelta(days=1)
+            return ops, active_days
+
+        def _trend(current_val, previous_val):
+            if current_val > previous_val:
+                return "up"
+            elif current_val < previous_val:
+                return "down"
+            return "neutral"
+
+        # --- Calculer par utilisateur ---
+        users_list = []
+        all_indices = []
+
+        for uid, ud in user_data.items():
+            dates_set = ud["dates"]
+            ops_by_date = ud["ops_by_date"]
+            total_ops = sum(ops_by_date.values())
+
+            # JOUR
+            ops_today = ops_by_date.get(today.isoformat(), 0)
+            ops_yesterday = ops_by_date.get(yesterday.isoformat(), 0)
+            day_index = 1.0 if today.isoformat() in dates_set else 0.0
+
+            # SEMAINE
+            ops_week, days_week = _ops_and_days_in_range(ops_by_date, dates_set, week_start, today)
+            ops_prev_week, _ = _ops_and_days_in_range(ops_by_date, dates_set, prev_week_start, prev_week_end)
+            week_index = round(days_week / 7, 2)
+
+            # MOIS
+            ops_month, days_month = _ops_and_days_in_range(ops_by_date, dates_set, month_start, today)
+            ops_prev_month, _ = _ops_and_days_in_range(ops_by_date, dates_set, prev_month_start, prev_month_last_day)
+            month_index = round(days_month / days_in_current_month, 2)
+
+            # TOTAL
+            sorted_dates = sorted(dates_set)
+            if sorted_dates:
+                first_day = date.fromisoformat(sorted_dates[0])
+                total_span = max((today - first_day).days + 1, 1)
+            else:
+                total_span = 1
+            total_active_days = len(dates_set)
+            total_index = round(total_active_days / total_span, 2)
+
+            avg_index = round((day_index + week_index + month_index + total_index) / 4, 2)
+            all_indices.append(avg_index)
+
+            users_list.append({
+                "user_id": uid,
+                "display_name": display_names.get(uid, f"User {uid}"),
+                "day": {
+                    "index": day_index,
+                    "trend": _trend(ops_today, ops_yesterday),
+                    "operations_current": ops_today,
+                    "operations_previous": ops_yesterday,
+                },
+                "week": {
+                    "index": week_index,
+                    "trend": _trend(ops_week, ops_prev_week),
+                    "operations_current": ops_week,
+                    "operations_previous": ops_prev_week,
+                },
+                "month": {
+                    "index": month_index,
+                    "trend": _trend(ops_month, ops_prev_month),
+                    "operations_current": ops_month,
+                    "operations_previous": ops_prev_month,
+                },
+                "total": {
+                    "index": total_index,
+                    "trend": "neutral",
+                    "operations_current": total_ops,
+                    "operations_previous": 0,
+                },
+            })
+
+        # Trier par activité totale DESC
+        users_list.sort(key=lambda u: u["total"]["operations_current"], reverse=True)
+
+        # global_regularity : moyenne des indices moyens (variance inversée simplifiée)
+        if all_indices:
+            mean_idx = sum(all_indices) / len(all_indices)
+            global_regularity = round(mean_idx, 2)
+        else:
+            global_regularity = 0.0
+
+        logger.info(f"[REGULARITY] Users: {len(users_list)}, Global regularity: {global_regularity}")
+
+        return {
+            "global_regularity": global_regularity,
+            "users": users_list,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[ADMIN ANALYTICS] Error in user-regularity-matrix: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erreur user-regularity-matrix: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ENDPOINT 4 — Funnel de conversion
 # ═══════════════════════════════════════════════════════════════════════════
 

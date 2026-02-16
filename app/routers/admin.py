@@ -370,18 +370,6 @@ def analytics_conversion_funnel(
     sb = service_client()
 
     try:
-        # Signups : compter les users créés entre start_date et end_date
-        # users_map n'a pas de created_at, on utilise la table auth.users via Users
-        # On ne peut pas accéder à auth.users directement, on utilise users_map
-        # Fallback : compter tous les users si pas de dates
-        q = sb.table("users_map").select("user_id", count="exact").limit(0)
-        if start_date:
-            # users_map n'a pas created_at → on utilise l'id comme proxy
-            # Meilleure approche : vérifier si created_at existe
-            pass
-        signups_res = q.execute()
-        signups = signups_res.count or 0
-
         # Impressions & downloads : depuis analytics_manual_data
         impressions = 0
         downloads = 0
@@ -400,13 +388,17 @@ def analytics_conversion_funnel(
             # Table n'existe pas encore → 0
             pass
 
+        # Compter les users ayant au moins 1 entrainement
+        training_users = sb.table("Entrainement").select("Users_Id").execute()
+        unique_users_with_training = len(set([t["Users_Id"] for t in (getattr(training_users, "data", []) or []) if t.get("Users_Id")]))
+
         # Subscriptions (pas de table abonnement)
         subscriptions = 0
 
         return {
             "impressions": impressions,
             "downloads": downloads,
-            "signups": signups,
+            "users_with_training": unique_users_with_training,
             "subscriptions": subscriptions,
         }
     except HTTPException:

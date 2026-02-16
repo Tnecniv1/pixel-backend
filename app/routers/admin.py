@@ -107,8 +107,12 @@ def analytics_overview(
         total_users_res = sb.table("users_map").select("user_id", count="exact").limit(0).execute()
         total_users = total_users_res.count or 0
 
-        # Entrainements sur la période → nombre d'opérations (observations)
-        # On récupère les ids d'entrainement depuis la période
+        # Compter TOUTES les opérations depuis le début
+        total_ops_res = sb.table("Observations").select("id", count="exact").limit(0).execute()
+        total_operations = total_ops_res.count if total_ops_res else 0
+        logger.info(f"[OVERVIEW DEBUG] Total operations counted: {total_operations}")
+
+        # Entrainements sur la période (pour active_users)
         ent_res = (
             sb.table("Entrainement")
             .select("id")
@@ -116,12 +120,6 @@ def analytics_overview(
             .limit(100000)
             .execute()
         )
-        ent_ids = [e["id"] for e in (getattr(ent_res, "data", []) or [])]
-
-        total_operations = 0
-        if ent_ids:
-            obs_res = sb.table("Observations").select("id", count="exact").in_("Entrainement_Id", ent_ids).limit(0).execute()
-            total_operations = obs_res.count or 0
 
         # Utilisateurs actifs (au moins 1 entrainement sur la période)
         active_ids = set()

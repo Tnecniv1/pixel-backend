@@ -20,7 +20,7 @@ webhook_router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 # Événements qui activent l'abonnement
 SUBSCRIBE_EVENTS = {"INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION"}
 # Événements qui désactivent l'abonnement
-UNSUBSCRIBE_EVENTS = {"EXPIRATION", "CANCELLATION"}
+UNSUBSCRIBE_EVENTS = {"EXPIRATION"}
 
 
 def _verify_webhook_secret(authorization: Optional[str]) -> None:

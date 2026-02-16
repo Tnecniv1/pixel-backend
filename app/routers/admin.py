@@ -372,22 +372,31 @@ def analytics_operations_daily_activity(
 
         today = date.today()
 
-        # Récupérer les entrainements
+        # Récupérer les entrainements (avec pagination pour dépasser la limite Supabase de 1000)
         if days is not None:
             cutoff_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
-            ent_res = (
-                sb.table("Entrainement")
-                .select("id, Date")
-                .gte("Date", cutoff_date)
-                .execute()
-            )
         else:
-            ent_res = (
-                sb.table("Entrainement")
-                .select("id, Date")
-                .execute()
-            )
-        all_entrainements = getattr(ent_res, "data", []) or []
+            cutoff_date = None
+
+        logger.info(f"[ACTIVITY] Today: {today}")
+        logger.info(f"[ACTIVITY] Cutoff date: {cutoff_date}")
+
+        all_entrainements = []
+        page_size = 1000
+        offset = 0
+        while True:
+            query = sb.table("Entrainement").select("id, Date")
+            if cutoff_date:
+                query = query.gte("Date", cutoff_date)
+            query = query.order("id").range(offset, offset + page_size - 1)
+            ent_res = query.execute()
+            page_data = getattr(ent_res, "data", []) or []
+            all_entrainements.extend(page_data)
+            if len(page_data) < page_size:
+                break
+            offset += page_size
+
+        logger.info(f"[ACTIVITY] Total entrainements found: {len(all_entrainements)}")
 
         # Map entrainement_id -> date
         ent_date_map: dict = {}
@@ -398,22 +407,30 @@ def analytics_operations_daily_activity(
 
         all_ent_ids = list(ent_date_map.keys())
 
-        # Compter les observations par date
+        # Compter les observations par date (avec pagination par batch)
         ops_by_date: dict = defaultdict(int)
         if all_ent_ids:
             for i in range(0, len(all_ent_ids), 500):
                 batch = all_ent_ids[i:i + 500]
-                obs_res = (
-                    sb.table("Observations")
-                    .select("Entrainement_Id")
-                    .in_("Entrainement_Id", batch)
-                    .execute()
-                )
-                for o in (getattr(obs_res, "data", []) or []):
-                    eid = o.get("Entrainement_Id")
-                    d = ent_date_map.get(eid)
-                    if d:
-                        ops_by_date[d] += 1
+                obs_offset = 0
+                while True:
+                    obs_res = (
+                        sb.table("Observations")
+                        .select("Entrainement_Id")
+                        .in_("Entrainement_Id", batch)
+                        .order("id")
+                        .range(obs_offset, obs_offset + page_size - 1)
+                        .execute()
+                    )
+                    obs_data = getattr(obs_res, "data", []) or []
+                    for o in obs_data:
+                        eid = o.get("Entrainement_Id")
+                        d = ent_date_map.get(eid)
+                        if d:
+                            ops_by_date[d] += 1
+                    if len(obs_data) < page_size:
+                        break
+                    obs_offset += page_size
 
         # Déterminer la date de début
         if days is not None:
@@ -435,9 +452,9 @@ def analytics_operations_daily_activity(
             })
             current += timedelta(days=1)
 
-        min_date = data[0]["date"] if data else "N/A"
-        max_date = data[-1]["date"] if data else "N/A"
-        logger.info(f"[ACTIVITY DEBUG] Date range: {min_date} to {max_date}, Total days: {len(data)}, Entrainements fetched: {len(all_entrainements)}")
+        dates = [d["date"] for d in data]
+        logger.info(f"[ACTIVITY] Date range: {min(dates) if dates else 'N/A'} to {max(dates) if dates else 'N/A'}")
+        logger.info(f"[ACTIVITY] Total days returned: {len(data)}, Entrainements fetched: {len(all_entrainements)}")
 
         return {"data": data}
     except HTTPException:

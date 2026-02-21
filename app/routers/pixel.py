@@ -19,18 +19,22 @@ CAPACITY = 350 * 350  # 122_500
 
 
 def _calcul_malus(jours_inactif: int) -> int:
-    """Calcule le malus total selon le barème de régularité."""
-    malus = 0
-    for jour in range(1, jours_inactif + 1):
-        if jour <= 7:
-            malus += 5
-        elif jour <= 14:
-            malus += 8
-        elif jour <= 21:
-            malus += 12
-        else:
-            malus += 100
-    return malus
+    """Calcule le malus total selon le barème de régularité.
+    Jour de grâce : si joué hier, pas de malus (a encore aujourd'hui).
+    """
+    if jours_inactif <= 1:
+        return 0
+
+    # Décaler les jours : le jour 2 d'inactivité = 1er jour de malus
+    jours_malus = jours_inactif - 1
+
+    if jours_malus <= 7:
+        return jours_malus * 5
+    if jours_malus <= 14:
+        return 7 * 5 + (jours_malus - 7) * 8
+    if jours_malus <= 21:
+        return 7 * 5 + 7 * 8 + (jours_malus - 14) * 12
+    return 7 * 5 + 7 * 8 + 7 * 12 + (jours_malus - 21) * 100
 
 
 @router.get("/state")
@@ -75,7 +79,7 @@ def get_pixel_state(auth_uid: str = Query(..., description="UUID Supabase de l'u
                 score_total = max(0, score_total - malus)
                 supabase.table("users_map").update({
                     "score_total": score_total,
-                    "last_training_date": date.today().isoformat(),
+                    # last_training_date est mis à jour par le trigger, pas ici
                 }).eq("user_id", user_id).execute()
 
     except Exception as e:

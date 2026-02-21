@@ -34,22 +34,12 @@ def init_scheduler():
     logger.info("[Scheduler] Initialisation des tâches planifiées...")
     
     # Import des tâches
-    from .daily_reminder import send_daily_reminders
     from .ranking_checker import check_rankings
 
-    # 1) Rappels quotidiens - 20:00 heure de Paris
-    scheduler.add_job(
-        send_daily_reminders,
-        CronTrigger(hour=20, minute=0, timezone=PARIS_TZ),
-        id='daily_reminder',
-        name='Rappels quotidiens',
-        replace_existing=True
-    )
-    logger.info("[Scheduler] ✓ Rappels quotidiens programmés (20:00 Paris)")
-
+    # NOTE: Rappels quotidiens (daily_reminder) désactivés
     # NOTE: Notifications du matin (morning_quote) désactivées
 
-    # 2) Vérification des classements - Toutes les 30 minutes
+    # 1) Vérification des classements - Toutes les 30 minutes
     scheduler.add_job(
         check_rankings,
         CronTrigger(minute='*/30', timezone=PARIS_TZ),

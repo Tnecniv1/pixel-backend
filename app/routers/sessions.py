@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional
 from datetime import date, datetime, timedelta
 from ..services.evolution import EvolutionService
 import random
+import math
+from collections import defaultdict
 from pydantic import BaseModel
 from ..deps import supabase, get_auth_uid_from_bearer, user_scoped_client  # ← ajout user_scoped_client
 from ..services.user_resolver import resolve_or_register_user_id
@@ -338,6 +340,159 @@ def generer_exercices_mixte(
 # -----------------------------------------------------------------------------
 # Observations (nouvelle logique : DB calcule Etat/Score/Marge_Erreur/Solution)
 # -----------------------------------------------------------------------------
+def _calculate_scoring(sb, entrainement_id: int, user_id: int, inserted_rows: List[Dict[str, Any]]) -> None:
+    """
+    Porte en Python la logique du trigger calculate_new_scoring.
+    1. Une requête pour les IDs d'entraînements + une requête pour tout l'historique
+       (équivalent du JOIN Observations-Entrainement WHERE Users_Id = user_id)
+    2. Calcul en mémoire de bonus_vitesse, bonus_marge, score_global par Parcours_Id+Operation
+    3. Mise à jour en une seule requête upsert
+    Le trigger calculate_new_scoring reste actif pendant la phase de validation.
+    """
+    if not inserted_rows:
+        return
+
+    current_ids = {r["id"] for r in inserted_rows if r.get("id") is not None}
+    if not current_ids:
+        return
+
+    # --- 1) Historique : IDs des 200 entraînements les plus récents du user ---
+    entr_res = (
+        sb.table("Entrainement")
+        .select("id")
+        .eq("Users_Id", user_id)
+        .order("id", desc=True)
+        .limit(200)
+        .execute()
+    )
+    all_entr_ids = [r["id"] for r in (entr_res.data or [])]
+    if not all_entr_ids:
+        return
+
+    # --- 2) Toutes les observations (historique + courantes pour Etat/Marge_Erreur du trigger) ---
+    obs_res = (
+        sb.table("Observations")
+        .select(
+            "id, Entrainement_Id, Parcours_Id, Operation, Operateur_Un, Operateur_Deux, "
+            "Proposition, Correction, Temps_Seconds, Etat, Score, Solution, Marge_Erreur"
+        )
+        .in_("Entrainement_Id", all_entr_ids)
+        .order("id", desc=True)
+        .limit(2000)
+        .execute()
+    )
+    all_obs = obs_res.data or []
+
+    # --- 3) Séparer historique (sessions passées) et observations courantes ---
+    history: List[Dict[str, Any]] = []
+    current_obs: List[Dict[str, Any]] = []
+    for o in all_obs:
+        if o.get("id") in current_ids:
+            current_obs.append(o)
+        else:
+            history.append(o)
+
+    # Grouper l'historique par (Parcours_Id, Operation) — déjà trié id desc
+    hist_by_key: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
+    for o in history:
+        hist_by_key[(o.get("Parcours_Id"), o.get("Operation"))].append(o)
+
+    # --- 4) Calcul en mémoire ---
+    HIST_MIN   = 5
+    HIST_LIMIT = 50
+    upsert_payloads: List[Dict[str, Any]] = []
+
+    for obs in current_obs:
+        key  = (obs.get("Parcours_Id"), obs.get("Operation"))
+        hist = hist_by_key[key][:HIST_LIMIT]
+        etat = str(obs.get("Etat") or "").strip()
+        score_base = int(obs.get("Score") or (1 if etat == "VRAI" else -1))
+
+        if len(hist) < HIST_MIN:
+            # Pas assez d'historique → bonus nuls, score_global = Score de base
+            bonus_vitesse = 0.0
+            bonus_marge   = 0.0
+            score_global  = score_base
+        else:
+            temps = float(obs.get("Temps_Seconds") or 0)
+            marge = float(obs.get("Marge_Erreur") or 0)
+
+            # Stats vitesse sur toutes les obs de l'historique
+            temps_list = [float(h["Temps_Seconds"]) for h in hist if h.get("Temps_Seconds") is not None]
+            if temps_list:
+                mean_t = sum(temps_list) / len(temps_list)
+                std_t  = (sum((x - mean_t) ** 2 for x in temps_list) / len(temps_list)) ** 0.5
+            else:
+                mean_t, std_t = temps, 0.0
+
+            # Stats marge sur les FAUX uniquement
+            marge_list = [
+                float(h["Marge_Erreur"]) for h in hist
+                if h.get("Marge_Erreur") is not None and h.get("Etat") == "FAUX"
+            ]
+            if marge_list:
+                mean_m = sum(marge_list) / len(marge_list)
+                std_m  = (sum((x - mean_m) ** 2 for x in marge_list) / len(marge_list)) ** 0.5
+            else:
+                mean_m, std_m = marge, 0.0
+
+            # bonus_vitesse
+            if std_t == 0 or mean_t == 0:
+                bonus_vitesse = 1.0 if etat == "VRAI" else -1.0
+            else:
+                zone_min_t = mean_t - std_t
+                zone_max_t = mean_t + std_t
+                if etat == "VRAI":
+                    if temps < zone_min_t:
+                        bonus_vitesse = 3.0
+                    elif temps > zone_max_t:
+                        bonus_vitesse = 0.8
+                    else:
+                        bonus_vitesse = 1.0
+                else:
+                    bonus_vitesse = -1.0 if zone_min_t <= temps <= zone_max_t else -2.0
+
+            # bonus_marge
+            if etat == "VRAI":
+                bonus_marge = 0.0
+            elif std_m == 0 or mean_m == 0:
+                bonus_marge = -1.0
+            else:
+                zone_min_m = mean_m - std_m
+                zone_max_m = mean_m + std_m
+                if marge < zone_min_m:
+                    bonus_marge = 0.0
+                elif marge > zone_max_m:
+                    bonus_marge = -2.0
+                else:
+                    bonus_marge = -1.0
+
+            score_global = math.floor(bonus_vitesse + bonus_marge)
+
+        upsert_payloads.append({
+            "id":              obs["id"],
+            "Entrainement_Id": obs.get("Entrainement_Id"),
+            "Parcours_Id":     obs.get("Parcours_Id"),
+            "Operateur_Un":    obs.get("Operateur_Un"),
+            "Operateur_Deux":  obs.get("Operateur_Deux"),
+            "Operation":       obs.get("Operation"),
+            "Proposition":     obs.get("Proposition"),
+            "Correction":      obs.get("Correction", "NON"),
+            "Temps_Seconds":   obs.get("Temps_Seconds", 0),
+            "Etat":            obs.get("Etat"),
+            "Score":           obs.get("Score"),
+            "Solution":        obs.get("Solution"),
+            "Marge_Erreur":    obs.get("Marge_Erreur"),
+            "bonus_vitesse":   round(bonus_vitesse, 2),
+            "bonus_marge":     round(bonus_marge, 2),
+            "score_global":    score_global,
+        })
+
+    # --- 5) Mise à jour en une seule requête ---
+    if upsert_payloads:
+        sb.table("Observations").upsert(upsert_payloads, on_conflict="id").execute()
+
+
 def _update_classement_after_session(sb, data: List[Dict[str, Any]]) -> None:
     """
     Relit les scores depuis Supabase après insertion et met à jour Classement + users_map
@@ -484,6 +639,24 @@ def post_observations(payload: Any = Body(...), authorization: Optional[str] = H
         if not chunk_data:
             raise HTTPException(500, detail=f"Insertion Observations échouée (chunk {i})")
         data.extend(chunk_data)
+
+    # ---------- CALCUL DU SCORING ----------
+    try:
+        _eid = data[0].get("Entrainement_Id") if data else None
+        if _eid is not None:
+            _entr = (
+                sb.table("Entrainement")
+                .select("Users_Id")
+                .eq("id", _eid)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            _uid = int(_entr[0]["Users_Id"]) if _entr and _entr[0].get("Users_Id") is not None else None
+            if _uid is not None:
+                _calculate_scoring(sb, int(_eid), _uid, data)
+    except Exception as e:
+        print(f"[post_observations] erreur calculate_scoring: {e}")
 
     # ---------- MISE À JOUR CLASSEMENT & users_map ----------
     try:

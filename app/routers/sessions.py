@@ -479,7 +479,7 @@ def _calculate_scoring(sb, entrainement_id: int, user_id: int, inserted_rows: Li
     # --- 5) Mise à jour en une seule requête ---
     if upsert_payloads:
         try:
-            res = sb.table("Observations").upsert(upsert_payloads, on_conflict="id").execute()
+            res = supabase.table("Observations").upsert(upsert_payloads, on_conflict="id").execute()
             print(f"[scoring upsert] data count: {len(res.data or [])}, error: {getattr(res, 'error', None)}")
         except Exception as e:
             print(f"[scoring upsert] exception: {e}")

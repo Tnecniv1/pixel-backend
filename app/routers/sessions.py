@@ -438,19 +438,19 @@ def _calculate_scoring(sb, entrainement_id: int, user_id: int, inserted_rows: Li
 
             # bonus_vitesse
             if std_t == 0 or mean_t == 0:
-                bonus_vitesse = 1.0 if etat == "VRAI" else -1.0
+                bonus_vitesse = 0.0 if etat == "VRAI" else -2.0
             else:
                 zone_min_t = mean_t - std_t
                 zone_max_t = mean_t + std_t
                 if etat == "VRAI":
                     if temps < zone_min_t:
-                        bonus_vitesse = 3.0
+                        bonus_vitesse = 2.0
                     elif temps > zone_max_t:
-                        bonus_vitesse = 0.8
+                        bonus_vitesse = -1.0
                     else:
-                        bonus_vitesse = 1.0
+                        bonus_vitesse = 0.0
                 else:
-                    bonus_vitesse = -1.0 if zone_min_t <= temps <= zone_max_t else -2.0
+                    bonus_vitesse = -2.0 if zone_min_t <= temps <= zone_max_t else -3.0
 
             # bonus_marge
             if etat == "VRAI":
@@ -467,7 +467,7 @@ def _calculate_scoring(sb, entrainement_id: int, user_id: int, inserted_rows: Li
                 else:
                     bonus_marge = -1.0
 
-            score_global = math.floor(bonus_vitesse + bonus_marge)
+            score_global = math.floor(score_base + bonus_vitesse + bonus_marge)
 
         upsert_payloads.append({
             "id":            obs["id"],

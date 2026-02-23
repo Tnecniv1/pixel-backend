@@ -380,13 +380,18 @@ def post_observations(payload: Any = Body(...), authorization: Optional[str] = H
 
     # ---------- insertion ----------
     print("[DEBUG] rows to insert:", rows)
-    res = sb.table("Observations").insert(rows).execute()
-    data = getattr(res, "data", []) or []
-    err = getattr(res, "error", None)
-    if err:
-        raise HTTPException(500, detail=f"Insert error: {err}")
-    if not data:
-        raise HTTPException(500, detail="Insertion Observations échouée")
+    CHUNK_SIZE = 20
+    data = []
+    for i in range(0, len(rows), CHUNK_SIZE):
+        chunk = rows[i:i + CHUNK_SIZE]
+        res = sb.table("Observations").insert(chunk).execute()
+        err = getattr(res, "error", None)
+        if err:
+            raise HTTPException(500, detail=f"Insert error (chunk {i}): {err}")
+        chunk_data = getattr(res, "data", []) or []
+        if not chunk_data:
+            raise HTTPException(500, detail=f"Insertion Observations échouée (chunk {i})")
+        data.extend(chunk_data)
 
     # ---------- ÉVALUATION D'ÉVOLUTION ----------
     def _norm_op(db_val: str) -> Optional[str]:

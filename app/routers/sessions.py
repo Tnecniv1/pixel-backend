@@ -470,27 +470,19 @@ def _calculate_scoring(sb, entrainement_id: int, user_id: int, inserted_rows: Li
             score_global = math.floor(bonus_vitesse + bonus_marge)
 
         upsert_payloads.append({
-            "id":              obs["id"],
-            "Entrainement_Id": obs.get("Entrainement_Id"),
-            "Parcours_Id":     obs.get("Parcours_Id"),
-            "Operateur_Un":    obs.get("Operateur_Un"),
-            "Operateur_Deux":  obs.get("Operateur_Deux"),
-            "Operation":       obs.get("Operation"),
-            "Proposition":     obs.get("Proposition"),
-            "Correction":      obs.get("Correction", "NON"),
-            "Temps_Seconds":   obs.get("Temps_Seconds", 0),
-            "Etat":            obs.get("Etat"),
-            "Score":           obs.get("Score"),
-            "Solution":        obs.get("Solution"),
-            "Marge_Erreur":    obs.get("Marge_Erreur"),
-            "bonus_vitesse":   round(bonus_vitesse, 2),
-            "bonus_marge":     round(bonus_marge, 2),
-            "score_global":    score_global,
+            "id":            obs["id"],
+            "bonus_vitesse": round(bonus_vitesse, 2),
+            "bonus_marge":   round(bonus_marge, 2),
+            "score_global":  score_global,
         })
 
     # --- 5) Mise à jour en une seule requête ---
     if upsert_payloads:
-        sb.table("Observations").upsert(upsert_payloads, on_conflict="id").execute()
+        try:
+            res = sb.table("Observations").upsert(upsert_payloads, on_conflict="id").execute()
+            print(f"[scoring upsert] data count: {len(res.data or [])}, error: {getattr(res, 'error', None)}")
+        except Exception as e:
+            print(f"[scoring upsert] exception: {e}")
 
 
 def _update_classement_after_session(sb, data: List[Dict[str, Any]]) -> None:

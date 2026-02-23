@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from typing import Any, Dict, List, Optional
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from ..services.evolution import EvolutionService
 import random
 from pydantic import BaseModel
@@ -338,6 +338,98 @@ def generer_exercices_mixte(
 # -----------------------------------------------------------------------------
 # Observations (nouvelle logique : DB calcule Etat/Score/Marge_Erreur/Solution)
 # -----------------------------------------------------------------------------
+def _update_classement_after_session(sb, data: List[Dict[str, Any]]) -> None:
+    """
+    Relit les scores depuis Supabase après insertion et met à jour Classement + users_map
+    en une seule requête chacun. Remplace le trigger trg_update_classement_on_observation.
+    Prérequis : la table Classement doit avoir une colonne week_start DATE.
+    """
+    if not data:
+        return
+
+    # 1) Récupérer entrainement_id et Users_Id
+    entrainement_id = data[0].get("Entrainement_Id")
+    if entrainement_id is None:
+        print("[update_classement] Entrainement_Id manquant dans data")
+        return
+
+    entr_row = (
+        sb.table("Entrainement")
+        .select("Users_Id")
+        .eq("id", entrainement_id)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    if not entr_row or entr_row[0].get("Users_Id") is None:
+        print(f"[update_classement] Entrainement {entrainement_id} introuvable")
+        return
+    user_id = int(entr_row[0]["Users_Id"])
+
+    # 2) Relire les scores depuis Observations
+    #    (le trigger Supabase a calculé score_global au moment de l'INSERT)
+    obs_rows = (
+        sb.table("Observations")
+        .select("score_global, Score")
+        .eq("Entrainement_Id", entrainement_id)
+        .execute()
+        .data or []
+    )
+    delta_classement = sum(int(r.get("score_global") or r.get("Score") or 0) for r in obs_rows)
+    delta_score_base  = sum(int(r.get("Score") or 0) for r in obs_rows)
+
+    today  = date.today()
+    monday = today - timedelta(days=today.weekday())
+
+    # 3) Upsert Classement (score_global + score_week avec reset si nouvelle semaine)
+    existing_cl = (
+        sb.table("Classement")
+        .select("score_global, score_week, week_start")
+        .eq("Users_Id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    cl = getattr(existing_cl, "data", None) or {}
+
+    prev_global    = int(cl.get("score_global") or 0)
+    prev_week      = int(cl.get("score_week") or 0)
+    week_start_str = cl.get("week_start")
+    if week_start_str:
+        stored_monday = date.fromisoformat(str(week_start_str))
+        is_new_week   = stored_monday < monday
+    else:
+        is_new_week = True
+
+    new_score_week   = delta_classement if is_new_week else prev_week + delta_classement
+    new_score_global = prev_global + delta_classement
+
+    sb.table("Classement").upsert(
+        {
+            "Users_Id":     user_id,
+            "score_global": new_score_global,
+            "score_week":   new_score_week,
+            "week_start":   monday.isoformat(),
+        },
+        on_conflict="Users_Id",
+    ).execute()
+
+    # 4) Mettre à jour users_map (score_base + last_training_date)
+    user_row = (
+        sb.table("users_map")
+        .select("score_base")
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    um = getattr(user_row, "data", None) or {}
+    prev_score_base = int(um.get("score_base") or 0)
+
+    sb.table("users_map").update({
+        "score_base":         prev_score_base + delta_score_base,
+        "last_training_date": today.isoformat(),
+    }).eq("user_id", user_id).execute()
+
+
 @router.post("/observations")
 def post_observations(payload: Any = Body(...), authorization: Optional[str] = Header(default=None)):
     """Insert des observations.
@@ -392,6 +484,12 @@ def post_observations(payload: Any = Body(...), authorization: Optional[str] = H
         if not chunk_data:
             raise HTTPException(500, detail=f"Insertion Observations échouée (chunk {i})")
         data.extend(chunk_data)
+
+    # ---------- MISE À JOUR CLASSEMENT & users_map ----------
+    try:
+        _update_classement_after_session(sb, data)
+    except Exception as e:
+        print(f"[post_observations] erreur update_classement: {e}")
 
     # ---------- ÉVALUATION D'ÉVOLUTION ----------
     def _norm_op(db_val: str) -> Optional[str]:

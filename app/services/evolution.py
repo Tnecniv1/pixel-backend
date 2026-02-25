@@ -196,7 +196,7 @@ class EvolutionService:
 
     @staticmethod
     def _decide(pct: float, has_prev: bool, has_next: bool) -> str:
-        if pct > 0.95 and has_next:
+        if pct > 0.90 and has_next:
             return EVOL_PROGRESSION
         if pct < 0.5 and has_prev:
             return EVOL_REGRESSION

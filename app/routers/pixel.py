@@ -82,6 +82,25 @@ def get_pixel_state(auth_uid: str = Query(..., description="UUID Supabase de l'u
                     # last_training_date est mis à jour par le trigger, pas ici
                 }).eq("user_id", user_id).execute()
 
+                # ─── MISE À JOUR CLASSEMENT (idempotente) ─────────────────
+                cl_res = (
+                    supabase.table("Classement")
+                    .select("score_global, score_week, malus_applied_date")
+                    .eq("Users_Id", user_id)
+                    .maybe_single()
+                    .execute()
+                )
+                cl = (cl_res.data or {}) if cl_res else {}
+                already_applied = (
+                    cl.get("malus_applied_date") == date.today().isoformat()
+                )
+                if cl and not already_applied:
+                    supabase.table("Classement").update({
+                        "score_global":       max(0, int(cl.get("score_global") or 0) - malus),
+                        "score_week":         max(0, int(cl.get("score_week")   or 0) - malus),
+                        "malus_applied_date": date.today().isoformat(),
+                    }).eq("Users_Id", user_id).execute()
+
     except Exception as e:
         print(f"[PIXEL STATE] users_map error: {e}")
 

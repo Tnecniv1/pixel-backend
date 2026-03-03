@@ -624,6 +624,21 @@ def post_observations(payload: Any = Body(...), authorization: Optional[str] = H
         if existing.data:
             return {"status": "already_processed", "message": "Entrainement déjà soumis"}
 
+    # ---------- troncature au Volume attendu ----------
+    if rows:
+        entr_vol = (
+            sb.table("Entrainement")
+            .select("id, Volume")
+            .eq("id", entrainement_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if entr_vol and entr_vol[0].get("Volume") is not None:
+            volume_max = int(entr_vol[0]["Volume"])
+            if len(rows) > volume_max:
+                rows = rows[:volume_max]
+
     # ---------- insertion ----------
     print("[DEBUG] rows to insert:", rows)
     CHUNK_SIZE = 20

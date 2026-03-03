@@ -617,6 +617,13 @@ def post_observations(payload: Any = Body(...), authorization: Optional[str] = H
         except Exception as e:
             raise HTTPException(422, detail=f"Observation[{i}] invalide: {e}")
 
+    # ---------- protection double soumission ----------
+    if rows:
+        entrainement_id = rows[0]["Entrainement_Id"]
+        existing = sb.table("Observations").select("id").eq("Entrainement_Id", entrainement_id).limit(1).execute()
+        if existing.data:
+            return {"status": "already_processed", "message": "Entrainement déjà soumis"}
+
     # ---------- insertion ----------
     print("[DEBUG] rows to insert:", rows)
     CHUNK_SIZE = 20

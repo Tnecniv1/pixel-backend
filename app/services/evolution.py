@@ -165,6 +165,8 @@ class EvolutionService:
         rows = (
             self._q("Entrainement", "id")
             .eq("Users_Id", user_id)
+            .order("id", desc=True)
+            .limit(200)
             .execute()
             .data
             or []
